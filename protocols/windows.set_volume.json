@@ -1,0 +1,25 @@
+{
+  "id": "windows.set_volume",
+  "version": "1.0.0",
+  "domain": "windows",
+  "capability": "set_volume",
+  "description": "Set Windows system volume to a percentage.",
+  "risk": "low",
+  "requires_confirmation": false,
+  "parameters": {
+    "volume": { "type": "integer", "required": true, "minimum": 0, "maximum": 100 }
+  },
+  "steps": [
+    {
+      "id": "set_volume",
+      "primitive": "os_api",
+      "action": "set_volume",
+      "parameters": {
+        "volume": "{{volume}}"
+      }
+    }
+  ],
+  "state_checks": ["audio_endpoint_available"],
+  "verification": ["volume_level_matches"],
+  "fallbacks": ["ask_user"]
+}

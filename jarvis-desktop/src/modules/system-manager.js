@@ -1,7 +1,133 @@
-const { exec } = require('child_process');
+const { exec, execFile, execSync, spawn } = require('child_process');
 const os = require('os');
+const path = require('path');
+const fs = require('fs');
+const http = require('http');
+
+const CHROME_DEBUG_PORT = Number(process.env.PECIFICS_CHROME_CDP_PORT || 9222);
+const CHROME_PROFILE_DIRECTORY = process.env.PECIFICS_CHROME_PROFILE || 'Default';
+const CHROME_USER_DATA = process.env.PECIFICS_CHROME_USER_DATA ||
+    path.join(os.homedir(), 'AppData', 'Local', 'Pecifics', 'ChromeProfile');
+
+function delay(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
 
 class SystemManager {
+    findChromePath() {
+        const candidates = [
+            'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+            'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+            path.join(process.env.LOCALAPPDATA || '', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+        ];
+        return candidates.find(candidate => candidate && fs.existsSync(candidate)) || null;
+    }
+
+    async isChromeDebugPortOpen(timeoutMs = 1500) {
+        return new Promise((resolve) => {
+            const req = http.get(`http://127.0.0.1:${CHROME_DEBUG_PORT}/json/version`, (res) => {
+                res.resume();
+                resolve(res.statusCode >= 200 && res.statusCode < 300);
+            });
+            req.on('error', () => resolve(false));
+            req.setTimeout(timeoutMs, () => {
+                req.destroy();
+                resolve(false);
+            });
+        });
+    }
+
+    isChromeRunning() {
+        try {
+            const out = execSync('tasklist /FI "IMAGENAME eq chrome.exe" /NH', {
+                encoding: 'utf8',
+                windowsHide: true,
+                timeout: 5000,
+            });
+            return out.toLowerCase().includes('chrome.exe');
+        } catch {
+            return false;
+        }
+    }
+
+    async launchChromeWithDebugPort(chromePath = null) {
+        const chromeExe = chromePath || this.findChromePath();
+        if (!chromeExe) throw new Error('Chrome not found on this machine.');
+        fs.mkdirSync(CHROME_USER_DATA, { recursive: true });
+
+        const args = [
+            `--remote-debugging-port=${CHROME_DEBUG_PORT}`,
+            `--user-data-dir=${CHROME_USER_DATA}`,
+            `--profile-directory=${CHROME_PROFILE_DIRECTORY}`,
+            '--no-startup-window',
+            '--no-first-run',
+            '--no-default-browser-check',
+        ];
+        const child = spawn(chromeExe, args, {
+            detached: true,
+            stdio: 'ignore',
+            windowsHide: false,
+        });
+        child.unref();
+
+        for (let i = 0; i < 12; i++) {
+            await delay(750);
+            if (await this.isChromeDebugPortOpen(800)) {
+                return {
+                    success: true,
+                    status: 'launched',
+                    port: CHROME_DEBUG_PORT,
+                    profile: CHROME_PROFILE_DIRECTORY,
+                    message: `Chrome launched with remote debugging on port ${CHROME_DEBUG_PORT}`,
+                };
+            }
+        }
+        throw new Error('Chrome launched but the debug port did not open in time.');
+    }
+
+    async ensureChromeWithDebugPort(options = {}) {
+        if (await this.isChromeDebugPortOpen()) {
+            return { success: true, status: 'already_ready', port: CHROME_DEBUG_PORT };
+        }
+
+        const chromePath = this.findChromePath();
+        if (!chromePath) {
+            return { success: false, status: 'chrome_not_found', error: 'Chrome not found on this machine.' };
+        }
+
+        if (this.isChromeRunning()) {
+            if (options.autoRelaunch) {
+                return await this.forceRelaunchChrome();
+            }
+            return {
+                success: false,
+                status: 'needs_relaunch',
+                needsUserAction: true,
+                userMessage: 'Chrome is open without remote debugging. Say "relaunch Chrome" to let Pecifics close and reopen Chrome with the debug bridge, then retry.',
+            };
+        }
+
+        try {
+            return await this.launchChromeWithDebugPort(chromePath);
+        } catch (e) {
+            return { success: false, status: 'launch_failed', error: e.message };
+        }
+    }
+
+    async forceRelaunchChrome() {
+        try {
+            execSync('taskkill /F /IM chrome.exe /T', {
+                encoding: 'utf8',
+                windowsHide: true,
+                timeout: 10000,
+            });
+        } catch {
+            // Chrome was already closed.
+        }
+        await delay(2000);
+        return await this.launchChromeWithDebugPort(this.findChromePath());
+    }
+
     /**
      * Clear temporary files from Windows temp folders
      * @param {boolean} includeCache - Also clear browser cache and system cache
@@ -60,14 +186,36 @@ class SystemManager {
     async toggleWiFi(enable) {
         return new Promise((resolve) => {
             const action = enable ? 'enable' : 'disable';
-            const psScript = `$adapters = Get-NetAdapter | Where-Object { $_.Name -like '*Wi-Fi*' -or $_.Name -like '*Wireless*' }; if ($adapters) { foreach ($adapter in $adapters) { ${action === 'enable' ? 'Enable-NetAdapter' : 'Disable-NetAdapter'} -Name $adapter.Name -Confirm:$false }; @{success=$true; message="WiFi ${action}d"} | ConvertTo-Json } else { @{success=$false; message="No WiFi adapter found"} | ConvertTo-Json }`;
+            const psScript = `
+try {
+    $adapters = Get-NetAdapter | Where-Object { $_.Name -like '*Wi-Fi*' -or $_.Name -like '*Wireless*' }
+    if ($adapters) {
+        foreach ($adapter in $adapters) {
+            ${enable ? 'Enable-NetAdapter' : 'Disable-NetAdapter'} -Name $adapter.Name -Confirm:$false -ErrorAction Stop
+        }
+        @{success=$true; message="WiFi ${action}d"} | ConvertTo-Json
+    } else {
+        @{success=$false; message="No WiFi adapter found"} | ConvertTo-Json
+    }
+} catch {
+    if ($_.Exception.Message -like '*administrator*' -or $_.Exception.Message -like '*permission*' -or $_.CategoryInfo.Category -eq 'PermissionDenied') {
+        @{success=$false; error="NEED_ADMIN"; message="⚠️ Administrator privileges required to toggle Wi-Fi. Please right-click the Pecifics shortcut -> Run as administrator."} | ConvertTo-Json
+    } else {
+        @{success=$false; error="ERROR"; message="Failed to toggle WiFi: " + $_.Exception.Message} | ConvertTo-Json
+    }
+}
+`.replace(/\n/g, ' ');
 
-            exec(`powershell -Command "${psScript}"`, (error, stdout) => {
+            exec(`powershell -ExecutionPolicy Bypass -Command "${psScript}"`, (error, stdout) => {
                 try {
-                    const result = JSON.parse(stdout);
+                    const result = JSON.parse(stdout.trim());
                     resolve(result);
                 } catch (e) {
-                    resolve({ success: !error, message: `WiFi ${action}d` });
+                    if (error?.message.includes('administrator') || error?.message.includes('permission')) {
+                        resolve({ success: false, message: '⚠️ Administrator privileges required to toggle Wi-Fi. Please right-click the Pecifics shortcut -> Run as administrator.' });
+                    } else {
+                        resolve({ success: !error, message: `WiFi ${action}d` });
+                    }
                 }
             });
         });
@@ -155,14 +303,22 @@ try {
     async setBrightness(brightness) {
         return new Promise((resolve) => {
             const level = Math.max(0, Math.min(100, brightness));
-            const psScript = `(Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightnessMethods).WmiSetBrightness(1, ${level}); @{success=$true; brightness=${level}; message="Brightness set to ${level}%"} | ConvertTo-Json`;
+            const psScript = `
+try {
+    $monitor = Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightnessMethods -ErrorAction Stop
+    $monitor.WmiSetBrightness(1, ${level})
+    @{success=$true; brightness=${level}; message="Brightness set to ${level}%"} | ConvertTo-Json
+} catch {
+    @{success=$false; error="DESKTOP_OR_UNSUPPORTED"; message="Brightness control is only supported on laptops with built-in displays. WMI class not found."} | ConvertTo-Json
+}
+`.replace(/\n/g, ' ');
 
-            exec(`powershell -Command "${psScript}"`, (error, stdout) => {
+            exec(`powershell -ExecutionPolicy Bypass -Command "${psScript}"`, (error, stdout) => {
                 try {
-                    const result = JSON.parse(stdout);
+                    const result = JSON.parse(stdout.trim());
                     resolve(result);
                 } catch (e) {
-                    resolve({ success: !error, message: `Brightness set to ${level}%`, brightness: level });
+                    resolve({ success: false, message: 'Brightness control is only supported on laptops with built-in displays.' });
                 }
             });
         });
@@ -352,20 +508,64 @@ try {
     async setVolume(volume) {
         return new Promise((resolve) => {
             const level = Math.max(0, Math.min(100, volume));
-            const scriptPath = require('path').join(__dirname, 'set-volume.ps1');
+            const normalized = (level / 100).toFixed(4);
             
-            exec(`powershell -ExecutionPolicy Bypass -File "${scriptPath}" -Level ${level}`, {timeout: 5000}, (error, stdout) => {
-                if (stdout && stdout.includes('SUCCESS')) {
+            // Primary: inline COM-based volume control (instant, silent)
+            const inlineScript = `
+try {
+    Add-Type -TypeDefinition @"
+    using System; using System.Runtime.InteropServices;
+    [Guid("5CDF2C82-841E-4546-9722-0CF74078229A"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IAudioEndpointVolume {
+        int _A(); int _B(); int _C(); int _D();
+        int SetMasterVolumeLevelScalar(float fLevel, System.Guid pguidEventContext);
+    }
+    [Guid("D666063F-1587-4E43-81F1-B948E807363F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IMMDevice { int Activate(ref System.Guid iid, int dwClsCtx, IntPtr p, [MarshalAs(UnmanagedType.IUnknown)] out object o); }
+    [Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IMMDeviceEnumerator { int _A(int a,int b, out IntPtr c); [return:MarshalAs(UnmanagedType.IUnknown)] object GetDefaultAudioEndpoint(int a, int b); }
+    [ComImport, Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")] class MMDevEnum {}
+    public class VolSet {
+        public static void Set(float v) {
+            var e = (IMMDeviceEnumerator) new MMDevEnum();
+            var dev = (IMMDevice) e.GetDefaultAudioEndpoint(0, 1);
+            var iid = typeof(IAudioEndpointVolume).GUID;
+            object vol; dev.Activate(ref iid, 23, System.IntPtr.Zero, out vol);
+            ((IAudioEndpointVolume)vol).SetMasterVolumeLevelScalar(v, System.Guid.Empty);
+        }
+    }
+"@
+    [VolSet]::Set(${normalized})
+    Write-Output "SUCCESS"
+} catch {
+    Write-Output "COM_FAILED"
+}
+`.replace(/\n/g, ' ');
+
+            exec(`powershell -NoProfile -Command "${inlineScript.replace(/"/g, '\\"')}"`, {timeout: 5000}, (error, stdout) => {
+                if (stdout && stdout.trim() === 'SUCCESS') {
                     resolve({ 
                         success: true, 
                         volume: level, 
                         message: `Volume set to ${level}%` 
                     });
                 } else {
-                    resolve({ 
-                        success: false, 
-                        volume: level, 
-                        message: `Volume control failed: ${error?.message || stdout}` 
+                    // Fallback: external ps1 script with SendKeys
+                    const scriptPath = require('path').join(__dirname, 'set-volume.ps1');
+                    exec(`powershell -ExecutionPolicy Bypass -File "${scriptPath}" -Level ${level}`, {timeout: 8000}, (err2, stdout2) => {
+                        if (stdout2 && stdout2.includes('SUCCESS')) {
+                            resolve({ 
+                                success: true, 
+                                volume: level, 
+                                message: `Volume set to ${level}% (fallback)` 
+                            });
+                        } else {
+                            resolve({ 
+                                success: false, 
+                                volume: level, 
+                                message: `Volume control failed: ${err2?.message || stdout2 || 'Unknown error'}` 
+                            });
+                        }
                     });
                 }
             });
@@ -728,6 +928,74 @@ try {
             });
         });
     }
+
+    /**
+     * Get active visible UI elements in the foreground window using UI Automation
+     * @returns {Promise<Object>} Elements list with coordinates
+     */
+    async getVisibleUIElements() {
+        return new Promise((resolve) => {
+            const psScript = `
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+Add-Type @"
+using System; using System.Runtime.InteropServices;
+public class Win32 {
+    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+}
+"@
+try {
+    $hwnd = [Win32]::GetForegroundWindow()
+    if ($hwnd -eq [IntPtr]::Zero) { Write-Output '{"success":false,"error":"NO_ACTIVE_WINDOW"}'; exit }
+    $window = [System.Windows.Automation.AutomationElement]::FromHandle($hwnd)
+    if ($window -eq $null) { Write-Output '{"success":false,"error":"WINDOW_NOT_FOUND"}'; exit }
+    $condition = [System.Windows.Automation.Condition]::TrueCondition
+    $elements = $window.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+    $results = @()
+    foreach ($el in $elements) {
+        try {
+            $name = $el.Current.Name
+            $ctrlType = $el.Current.ControlType
+            $rect = $el.Current.BoundingRectangle
+            if (($ctrlType -eq [System.Windows.Automation.ControlType]::Button -or
+                 $ctrlType -eq [System.Windows.Automation.ControlType]::Edit -or
+                 $ctrlType -eq [System.Windows.Automation.ControlType]::Hyperlink -or
+                 $ctrlType -eq [System.Windows.Automation.ControlType]::CheckBox -or
+                 $ctrlType -eq [System.Windows.Automation.ControlType]::ComboBox -or
+                 $ctrlType -eq [System.Windows.Automation.ControlType]::MenuItem -or
+                 $ctrlType -eq [System.Windows.Automation.ControlType]::ListItem) -and
+                $rect.Width -gt 0 -and $rect.Height -gt 0) {
+                $results += @{
+                    name = $name
+                    type = $ctrlType.ProgrammaticName.Replace("ControlType.", "")
+                    left = [math]::Round($rect.Left)
+                    top = [math]::Round($rect.Top)
+                    width = [math]::Round($rect.Width)
+                    height = [math]::Round($rect.Height)
+                }
+            }
+        } catch {}
+    }
+    @{success=$true; count=$results.Count; elements=$results} | ConvertTo-Json -Depth 5 -Compress
+} catch {
+    @{success=$false; error=$_.Exception.Message} | ConvertTo-Json -Compress
+}
+`.replace(/\n/g, ' ');
+
+            exec(`powershell -NoProfile -Command "${psScript.replace(/"/g, '\\"')}"`, { maxBuffer: 5 * 1024 * 1024, timeout: 15000 }, (error, stdout) => {
+                if (error) {
+                    return resolve({ success: false, error: error.message });
+                }
+                try {
+                    const result = JSON.parse(stdout.trim());
+                    resolve(result);
+                } catch (e) {
+                    resolve({ success: false, error: 'Failed to parse UIA elements output' });
+                }
+            });
+        });
+    }
 }
 
 module.exports = new SystemManager();
+

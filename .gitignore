@@ -14,6 +14,14 @@ build/
 node_modules/
 *.log
 npm-debug.log*
+*.tsbuildinfo
+
+# Runtime/generated app state
+action_log.jsonl
+backend_stdout.log
+backend_stderr.log
+colab-backend/action_log.jsonl
+colab-backend/memory_store/
 
 # Electron build output
 jarvis-desktop/dist/

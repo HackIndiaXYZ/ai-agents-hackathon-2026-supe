@@ -19,6 +19,21 @@ const systemManager = require('./system-manager');
 const osTasks = require('./os-tasks');
 const browserAutomation = require('./browser-automation');
 const screenAgent = require('./screen-agent');
+const protocolRegistry = require('./protocol-registry');
+
+// App Handlers Re-Architecture
+const appHandlers = require('./app-handlers/index');
+const whatsappHandler = require('./app-handlers/whatsapp');
+const spotifyHandler = require('./app-handlers/spotify');
+const telegramHandler = require('./app-handlers/telegram');
+const vscodeHandler = require('./app-handlers/vscode');
+const notesHandler = require('./app-handlers/notes');
+
+appHandlers.registerAppHandler(['whatsapp', 'whats app', 'whats-app', 'wa'], whatsappHandler);
+appHandlers.registerAppHandler(['spotify'], spotifyHandler);
+appHandlers.registerAppHandler(['telegram'], telegramHandler);
+appHandlers.registerAppHandler(['vscode', 'visual studio code', 'vs code'], vscodeHandler);
+appHandlers.registerAppHandler(['notepad', 'notepad++', 'notes'], notesHandler);
 
 // PowerShell helper class for mouse/keyboard operations (loaded once)
 const PS_HELPER_SCRIPT = `
@@ -305,6 +320,96 @@ class ActionExecutor {
         this.lastOpenedAppName = null;
         // Flag to stop execution
         this.shouldStop = false;
+
+        // Initialize persistent background PowerShell bridge for zero-spawn win32 actions
+        try {
+            console.log('[action-executor] Initializing persistent PowerShell bridge...');
+            this.psBridge = spawn('powershell', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', '-'], {
+                stdio: ['pipe', 'pipe', 'pipe']
+            });
+            this.psBridge.stdin.setDefaultEncoding('utf-8');
+
+            const initCommands = `
+                Add-Type -AssemblyName System.Windows.Forms
+                Add-Type -AssemblyName UIAutomationClient
+                Add-Type -AssemblyName UIAutomationTypes
+                Add-Type @"
+                using System;
+                using System.Runtime.InteropServices;
+                public class Win32 {
+                    [DllImport("user32.dll")]
+                    public static extern bool SetCursorPos(int x, int y);
+                    [DllImport("user32.dll")]
+                    public static extern void mouse_event(int dwFlags, int dx, int dy, int dwData, int dwExtraInfo);
+                    
+                    public const int MOUSEEVENTF_LEFTDOWN = 0x02;
+                    public const int MOUSEEVENTF_LEFTUP = 0x04;
+                    public const int MOUSEEVENTF_RIGHTDOWN = 0x08;
+                    public const int MOUSEEVENTF_RIGHTUP = 0x10;
+                    public const int MOUSEEVENTF_WHEEL = 0x0800;
+
+                    [DllImport("user32.dll")]
+                    public static extern IntPtr GetForegroundWindow();
+                }
+"@
+                function Snap-Coordinate($x, $y) {
+                    $offsets = @(
+                        [System.Windows.Point]::new($x, $y),
+                        [System.Windows.Point]::new($x - 12, $y),
+                        [System.Windows.Point]::new($x + 12, $y),
+                        [System.Windows.Point]::new($x, $y - 12),
+                        [System.Windows.Point]::new($x, $y + 12)
+                    )
+                    foreach ($pt in $offsets) {
+                        try {
+                            $el = [System.Windows.Automation.AutomationElement]::FromPoint($pt)
+                            if ($el -ne $null) {
+                                $ctrlType = $el.Current.ControlType
+                                if ($ctrlType -eq [System.Windows.Automation.ControlType]::Button -or
+                                    $ctrlType -eq [System.Windows.Automation.ControlType]::Edit -or
+                                    $ctrlType -eq [System.Windows.Automation.ControlType]::Hyperlink -or
+                                    $ctrlType -eq [System.Windows.Automation.ControlType]::CheckBox -or
+                                    $ctrlType -eq [System.Windows.Automation.ControlType]::MenuItem -or
+                                    $ctrlType -eq [System.Windows.Automation.ControlType]::ComboBox -or
+                                    $ctrlType -eq [System.Windows.Automation.ControlType]::ListItem) {
+                                    
+                                    $rect = $el.Current.BoundingRectangle
+                                    if ($rect.Width -gt 0 -and $rect.Height -gt 0) {
+                                        $centerX = [math]::Round($rect.Left + ($rect.Width / 2))
+                                        $centerY = [math]::Round($rect.Top + ($rect.Height / 2))
+                                        return "$centerX,$centerY"
+                                    }
+                                }
+                            }
+                        } catch {}
+                    }
+                    return "$x,$y"
+                }
+                Write-Output "PS_BRIDGE_READY"
+            `;
+            this.psBridge.stdin.write(initCommands + "\n");
+            
+            this.psBridge.stdout.on('data', (data) => {
+                const text = data.toString().trim();
+                if (text.includes('PS_BRIDGE_READY')) {
+                    console.log('✅ Persistent background PowerShell bridge is fully READY!');
+                }
+            });
+
+            this.psBridge.stderr.on('data', (data) => {
+                const err = data.toString().trim();
+                if (err) console.warn('[powershell-bridge-stderr]', err);
+            });
+        } catch (e) {
+            console.error('❌ Failed to spawn persistent PowerShell bridge:', e);
+            this.psBridge = null;
+        }
+    }
+
+    normalizeBackendUrl(value) {
+        let backendUrl = String(value || 'http://127.0.0.1:8000').trim().replace(/\/+$/, '');
+        if (!backendUrl) backendUrl = 'http://127.0.0.1:8000';
+        return backendUrl.replace(/^http:\/\/localhost(?=[:/]|$)/i, 'http://127.0.0.1');
     }
 
     // Stop execution method
@@ -322,6 +427,54 @@ class ActionExecutor {
     isStopped() {
         return this.shouldStop;
     }
+
+    // Write a command directly to the persistent background PowerShell bridge (under 2ms)
+    writeToPSBridge(command) {
+        if (this.psBridge && this.psBridge.stdin && this.psBridge.stdin.writable) {
+            try {
+                this.psBridge.stdin.write(command.trim() + "\n");
+                return true;
+            } catch (e) {
+                console.error('[powershell-bridge-write-failed]', e);
+            }
+        }
+        return false;
+    }
+
+    // Snap target visual coordinate to center of native Win32 controls using UIA bridge function
+    async snapCoordinates(x, y) {
+        if (!this.psBridge || !this.psBridge.stdin || !this.psBridge.stdin.writable) {
+            return { x, y };
+        }
+        return new Promise((resolve) => {
+            const requestId = `SNAP_${Date.now()}_${Math.round(Math.random() * 1000)}`;
+            const onData = (data) => {
+                const text = data.toString().trim();
+                if (text.includes(requestId)) {
+                    const match = text.match(/SNAP_RESULT:(\d+),(\d+)/);
+                    if (match) {
+                        const snapX = parseInt(match[1]);
+                        const snapY = parseInt(match[2]);
+                        console.log(`[UIA Snapper] Snapped coordinate (${x}, ${y}) -> (${snapX}, ${snapY})`);
+                        cleanup();
+                        resolve({ x: snapX, y: snapY });
+                    }
+                }
+            };
+            const cleanup = () => {
+                this.psBridge.stdout.off('data', onData);
+                clearTimeout(timeout);
+            };
+            const timeout = setTimeout(() => {
+                cleanup();
+                resolve({ x, y });
+            }, 300);
+
+            this.psBridge.stdout.on('data', onData);
+            this.psBridge.stdin.write(`$res = Snap-Coordinate ${x} ${y}; Write-Output "${requestId} SNAP_RESULT:$res"\n`);
+        });
+    }
+
 
     // ============================================
     // File System Operations
@@ -406,7 +559,9 @@ class ActionExecutor {
     async generatePPT(params) {
         try {
             const http = require('http');
-            const backendUrl = 'http://localhost:8000';
+            const Store = require('electron-store');
+            const store = new Store();
+            const backendUrl = this.normalizeBackendUrl(store.get('colabUrl'));
             const body = JSON.stringify({
                 topic: params.topic || params.title || 'Presentation',
                 title: params.title || params.topic || 'Presentation',
@@ -630,68 +785,236 @@ class ActionExecutor {
 
     async tryOpenApp(command, originalName) {
         return new Promise(async (resolve) => {
-            // Method 1: Direct start command
-            exec(`start "" "${command}"`, async (error) => {
-                if (!error) {
-                    // Wait for app to start and get focus
-                    await this.waitForAppAndFocus(command, originalName);
+            console.log(`[tryOpenApp] Attempting to launch: "${originalName}" (fallback command: "${command}")`);
+            
+            // Method 1: Search and Launch via Start Menu (UWP & Win32 shortcuts — uses temp .ps1 file, zero escaping issues)
+            const uwpResult = await this.searchAndLaunchApp(originalName);
+            if (uwpResult.success) {
+                await this.waitForAppAndFocusRobust(command, uwpResult.appName || originalName, 3000);
+                this.lastOpenedAppName = originalName;
+                resolve({ success: true, message: uwpResult.message });
+                return;
+            }
+            
+            // Method 2: URI Protocol Launch (works for apps registered with protocol handlers like whatsapp://)
+            const uriProtocols = {
+                'whatsapp': 'whatsapp://', 'telegram': 'tg://', 'discord': 'discord://',
+                'slack': 'slack://', 'zoom': 'zoommtg://', 'spotify': 'spotify://',
+                'teams': 'msteams://', 'microsoft teams': 'msteams://', 'ms teams': 'msteams://',
+                'skype': 'skype://', 'steam': 'steam://'
+            };
+            const uriKey = originalName.toLowerCase().trim();
+            if (uriProtocols[uriKey]) {
+                try {
+                    const uriResult = await new Promise((res) => {
+                        exec(`start "" "${uriProtocols[uriKey]}"`, { timeout: 5000 }, (err) => {
+                            res(err ? null : true);
+                        });
+                    });
+                    if (uriResult) {
+                        await this.waitForAppAndFocusRobust(command, originalName, 3000);
+                        this.lastOpenedAppName = originalName;
+                        resolve({ success: true, message: `Opened ${originalName} via URI protocol` });
+                        return;
+                    }
+                } catch (e) { /* fall through */ }
+            }
 
-                    // Remember last opened app for focus retries
+            // Method 3: Direct Command Line (only for non-UWP apps that are in PATH)
+            // Suppress Windows popup by using powershell Start-Process with -ErrorAction
+            exec(`powershell -NoProfile -Command "Start-Process '${command}' -ErrorAction Stop"`, { timeout: 5000 }, async (error) => {
+                if (!error) {
+                    await this.waitForAppAndFocusRobust(command, originalName, 3000);
                     this.lastOpenedAppName = originalName;
-                    resolve({ success: true, message: `Opened ${originalName}` });
+                    resolve({ success: true, message: `Opened ${originalName} (PATH)` });
                     return;
                 }
                 
-                // Method 2: Try without quotes
-                exec(`start ${command}`, async (err2) => {
+                // Method 4: Windows Run Dialog simulation (last resort — types the app name into Win+R)
+                exec(`start ${command}`, { timeout: 5000 }, async (err2) => {
                     if (!err2) {
-                        await this.waitForAppAndFocus(command, originalName);
-
-                        // Remember last opened app for focus retries
+                        await this.waitForAppAndFocusRobust(command, originalName, 3000);
                         this.lastOpenedAppName = originalName;
-                        resolve({ success: true, message: `Opened ${originalName}` });
+                        resolve({ success: true, message: `Opened ${originalName} (bare)` });
                         return;
                     }
                     
-                    // Method 3: Search in Start Menu
-                    this.searchAndLaunchApp(originalName)
-                        .then(async (result) => {
-                            if (result.success) {
-                                await this.waitForAppAndFocus(command, originalName);
-                                this.lastOpenedAppName = originalName;
-                            }
-                            resolve(result);
-                        })
-                        .catch(() => {
-                            resolve({ success: false, error: `Could not open ${originalName}` });
-                        });
+                    resolve({ success: false, error: `Application '${originalName}' is not installed or could not be launched.` });
                 });
             });
         });
     }
 
     async searchAndLaunchApp(appName) {
+        // Write a temp PowerShell script file to avoid ALL escaping/expansion issues
+        const os = require('os');
+        const fs = require('fs');
+        const tmpScript = path.join(os.tmpdir(), `pecifics_launch_${Date.now()}.ps1`);
+        const escapedName = appName.replace(/'/g, "''");
+        
+        const scriptContent = `
+$app = Get-StartApps | Where-Object Name -like '*${escapedName}*' | Select-Object -First 1
+if ($app) {
+    Start-Process "explorer.exe" -ArgumentList ("shell:AppsFolder\\" + $app.AppID)
+    Write-Output ("SUCCESS:" + $app.Name)
+} else {
+    Write-Output "NOT_FOUND"
+}
+`;
         return new Promise((resolve) => {
-            // Use PowerShell to search Start Menu and launch
+            try {
+                fs.writeFileSync(tmpScript, scriptContent, 'utf8');
+                exec(`powershell -NoProfile -ExecutionPolicy Bypass -File "${tmpScript}"`, { timeout: 10000 }, (error, stdout) => {
+                    // Clean up temp file
+                    try { fs.unlinkSync(tmpScript); } catch (e) {}
+                    
+                    const output = (stdout || '').trim();
+                    console.log(`[searchAndLaunchApp] PowerShell output: "${output}", error: ${error ? error.message : 'none'}`);
+                    if (output.startsWith("SUCCESS:")) {
+                        const actualName = output.substring(8);
+                        resolve({ success: true, message: `Launched ${actualName} from Start Menu`, appName: actualName });
+                    } else {
+                        resolve({ success: false, error: `Could not find ${appName} in Start Menu` });
+                    }
+                });
+            } catch (e) {
+                console.error(`[searchAndLaunchApp] Failed to write temp script: ${e.message}`);
+                resolve({ success: false, error: e.message });
+            }
+        });
+    }
+
+    async focusApplicationWindowRobust(appName, processName) {
+        return new Promise((resolve) => {
+            const safeAppName = String(appName || '').replace(/'/g, "''");
+            const safeProcessName = String(processName || '').replace(/'/g, "''");
             const psScript = `
-                $app = Get-StartApps | Where-Object { $_.Name -like '*${appName.replace(/'/g, "''")}*' } | Select-Object -First 1
-                if ($app) {
-                    Start-Process "explorer.exe" -ArgumentList "shell:AppsFolder\\$($app.AppID)"
-                    Write-Output "Found and launched: $($app.Name)"
-                } else {
-                    Write-Error "App not found"
-                    exit 1
+$ErrorActionPreference = 'Stop'
+Add-Type @"
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+public class WindowHelper {
+    [DllImport("user32.dll")]
+    public static extern bool SetForegroundWindow(IntPtr hWnd);
+    [DllImport("user32.dll")]
+    public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)]
+    public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
+}
+"@
+$appName = '${safeAppName}'
+$processName = '${safeProcessName}'
+$processNeedle = ($processName -replace '\\.EXE$', '')
+$all = Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle -ne '' }
+$candidates = @()
+foreach ($p in $all) {
+    $score = 0
+    if ($appName -and $p.MainWindowTitle -like "*$appName*") { $score += 100 }
+    if ($processNeedle -and $p.ProcessName -like "*$processNeedle*") { $score += 80 }
+    if ($appName -match 'WhatsApp' -and $p.ProcessName -like 'WhatsApp*') { $score += 90 }
+    if ($appName -match 'WhatsApp' -and $p.ProcessName -eq 'ApplicationFrameHost' -and $p.MainWindowTitle -like '*WhatsApp*') { $score += 85 }
+    if ($appName -match 'WhatsApp' -and $p.ProcessName -eq 'msedgewebview2' -and $p.MainWindowTitle -like '*WhatsApp*') { $score += 70 }
+    if ($score -gt 0) {
+        $candidates += [pscustomobject]@{
+            process = $p.ProcessName
+            title = $p.MainWindowTitle
+            handle = $p.MainWindowHandle.ToInt64()
+            score = $score
+        }
+    }
+$target = $candidates | Sort-Object score -Descending | Select-Object -First 1
+if ($target) {
+    $handle = [IntPtr]$target.handle
+    [WindowHelper]::ShowWindow($handle, 9) | Out-Null
+    Start-Sleep -Milliseconds 80
+    $setForegroundOk = [WindowHelper]::SetForegroundWindow($handle)
+    Start-Sleep -Milliseconds 180
+    $appActivateOk = $false
+    try {
+        $shell = New-Object -ComObject WScript.Shell
+        $appActivateOk = [bool]($shell.AppActivate($target.title) -or $shell.AppActivate($appName))
+        Start-Sleep -Milliseconds 180
+    } catch {}
+    $fg = [WindowHelper]::GetForegroundWindow()
+    $builder = New-Object System.Text.StringBuilder 512
+    [WindowHelper]::GetWindowText($fg, $builder, $builder.Capacity) | Out-Null
+    $foregroundTitle = $builder.ToString()
+    $success = [bool]($setForegroundOk -or $appActivateOk -or ($foregroundTitle -like "*$($target.title)*") -or ($appName -and $foregroundTitle -like "*$appName*"))
+    [pscustomobject]@{
+        success = $success
+        reason = if ($success) { 'focused' } else { 'foreground_not_changed' }
+        method = if ($setForegroundOk) { 'SetForegroundWindow' } elseif ($appActivateOk) { 'WScript.AppActivate' } else { 'foreground_check' }
+        matchedProcess = $target.process
+        matchedTitle = $target.title
+        setForegroundOk = [bool]$setForegroundOk
+        appActivateOk = [bool]$appActivateOk
+        foregroundTitle = $foregroundTitle
+        candidates = @($candidates | Sort-Object score -Descending | Select-Object -First 5)
+    } | ConvertTo-Json -Depth 5 -Compress
+} else {
+    [pscustomobject]@{
+        success = $false
+        reason = 'no_window_candidate'
+        appName = $appName
+        processName = $processName
+        visibleWindows = @($all | Select-Object -First 12 ProcessName, MainWindowTitle)
+    } | ConvertTo-Json -Depth 4 -Compress
+}
+`;
+
+            const fsSync = require('fs');
+            const tempFile = path.join(os.tmpdir(), `pecifics-focus-${Date.now()}-${Math.random().toString(16).slice(2)}.ps1`);
+            fsSync.writeFileSync(tempFile, psScript, 'utf8');
+            exec(`powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${tempFile}"`, { timeout: 5000, maxBuffer: 1024 * 512 }, (error, stdout, stderr) => {
+                try { fsSync.unlinkSync(tempFile); } catch (e) {}
+                const output = (stdout || '').trim();
+                const raw = output.split(/\r?\n/).reverse().find(line => line.trim().startsWith('{')) || output;
+                let parsed = null;
+                try {
+                    parsed = raw ? JSON.parse(raw) : null;
+                } catch (e) {
+                    parsed = null;
                 }
-            `;
-            
-            exec(`powershell -NoProfile -Command "${psScript.replace(/"/g, '\\"').replace(/\n/g, ' ')}"`, (error, stdout) => {
-                if (error) {
-                    resolve({ success: false, error: `Could not find ${appName} in Start Menu` });
-                } else {
-                    resolve({ success: true, message: stdout.trim() || `Opened ${appName}` });
+                const details = parsed || {
+                    success: false,
+                    reason: 'unparseable_focus_output',
+                    output,
+                    stderr: (stderr || '').trim(),
+                    error: error ? error.message : null
+                };
+                if (error && details.success !== true) {
+                    details.error = error.message;
+                    details.stderr = (stderr || '').trim();
                 }
+                console.log(`[focusApplicationWindowRobust] ${appName}: ${JSON.stringify(details)}`);
+                resolve(details);
             });
         });
+    }
+
+    async waitForAppAndFocusRobust(command, appName, maxWaitMs = 5000) {
+        const startTime = Date.now();
+        const processName = path.basename(command, '.exe').toUpperCase();
+        let attempts = 0;
+        let lastDetails = null;
+
+        while (Date.now() - startTime < maxWaitMs) {
+            attempts += 1;
+            try {
+                lastDetails = await this.focusApplicationWindowRobust(appName, processName);
+                if (lastDetails.success) {
+                    return { success: true, attempts, elapsedMs: Date.now() - startTime, appName, processName, lastDetails };
+                }
+            } catch (e) {
+                lastDetails = { success: false, reason: 'focus_exception', error: e.message };
+            }
+            await this.delay(350);
+        }
+
+        return { success: false, attempts, elapsedMs: Date.now() - startTime, appName, processName, lastDetails };
     }
 
     async waitForAppAndFocus(command, appName, maxWaitMs = 5000) {
@@ -733,13 +1056,15 @@ class ActionExecutor {
                     intervalCleared = true;
                 }
                 console.log(`Focus complete for ${appName} after ${focusAttempts} successful attempts`);
-                resolve();
+                resolve(focusAttempts > 0);
             }, maxWaitMs + 100);
         });
     }
 
     async focusApplicationWindow(appName, processName) {
         return new Promise((resolve) => {
+            const safeAppName = String(appName || '').replace(/'/g, "''");
+            const safeProcessName = String(processName || '').replace(/'/g, "''");
             // Use PowerShell to find and focus the window
             const psScript = `
                 Add-Type @"
@@ -752,15 +1077,20 @@ class ActionExecutor {
                     public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
                 }
 "@
+                $appName = '${safeAppName}'
+                $processName = '${safeProcessName}'
                 $processes = Get-Process | Where-Object { 
                     $_.MainWindowTitle -ne '' -and 
-                    ($_.ProcessName -like '*${processName}*' -or $_.MainWindowTitle -like '*${appName}*')
-                } | Select-Object -First 1
+                    ($_.ProcessName -like "*$processName*" -or $_.MainWindowTitle -like "*$appName*")
+                } | Sort-Object MainWindowTitle | Select-Object -First 1
                 
                 if ($processes) {
                     [WindowHelper]::ShowWindow($processes.MainWindowHandle, 9)
-                    [WindowHelper]::SetForegroundWindow($processes.MainWindowHandle)
-                    Write-Output "Focused"
+                    $ok = [WindowHelper]::SetForegroundWindow($processes.MainWindowHandle)
+                    Start-Sleep -Milliseconds 150
+                    Write-Output ("Focused:" + $ok + ":" + $processes.ProcessName + ":" + $processes.MainWindowTitle)
+                } else {
+                    Write-Output "NotFound"
                 }
             `;
             
@@ -769,9 +1099,11 @@ class ActionExecutor {
                 resolve(false);
             }, 3000);
             
-            exec(`powershell -NoProfile -Command "${psScript.replace(/"/g, '\\"').replace(/\n/g, ' ')}"`, (error) => {
+            exec(`powershell -NoProfile -Command "${psScript.replace(/"/g, '\\"').replace(/\n/g, ' ')}"`, (error, stdout) => {
                 clearTimeout(timeout);
-                resolve(error ? false : true);
+                const output = (stdout || '').trim();
+                if (output) console.log(`[focusApplicationWindow] ${appName}: ${output}`);
+                resolve(!error && output.includes('Focused:'));
             });
         });
     }
@@ -800,7 +1132,21 @@ class ActionExecutor {
 
     async openUrl(url) {
         try {
-            if (open) {
+            if (/^https?:\/\//i.test(String(url || ''))) {
+                const browserResult = await browserAutomation.open(url);
+                if (browserResult && browserResult.success !== false) {
+                    return browserResult;
+                }
+                console.warn('[action-executor] Managed browser open failed, falling back to system browser:', browserResult?.error || 'unknown');
+            }
+
+            const fs = require('fs');
+            const chromePath = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+            const chromePathx86 = 'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe';
+            if (fs.existsSync(chromePath) || fs.existsSync(chromePathx86)) {
+                console.log('[action-executor] Launching Chrome directly with Default profile directory...');
+                exec(`start chrome --profile-directory=Default "${url}"`);
+            } else if (open) {
                 await open(url);
             } else {
                 exec(`start "" "${url}"`);
@@ -850,6 +1196,10 @@ class ActionExecutor {
     // ============================================
 
     async moveMouse(x, y) {
+        if (this.writeToPSBridge(`[Win32]::SetCursorPos(${x}, ${y})`)) {
+            return { success: true, message: `Moved mouse to (${x}, ${y})` };
+        }
+        // Fallback
         return new Promise((resolve) => {
             const psCommand = `${PS_HELPER_SCRIPT}; [Win32]::SetCursorPos(${x}, ${y})`;
             exec(`powershell -NoProfile -Command "${psCommand.replace(/"/g, '\"').replace(/\n/g, ' ')}"`, (error) => {
@@ -865,43 +1215,51 @@ class ActionExecutor {
     async click(x, y, clickType = 'left', double = false) {
         return new Promise(async (resolve) => {
             try {
-                // Move to position first
+                // Snap coordinates if x, y are provided
+                let snapX = x;
+                let snapY = y;
                 if (x !== undefined && y !== undefined) {
-                    await this.moveMouse(x, y);
+                    const snapped = await this.snapCoordinates(x, y);
+                    snapX = snapped.x;
+                    snapY = snapped.y;
+                }
+
+                // Move to position first
+                if (snapX !== undefined && snapY !== undefined) {
+                    await this.moveMouse(snapX, snapY);
                     await this.delay(100);
                 }
                 
-                // Use a simpler PowerShell approach with proper error handling
-                const clickScript = `
-                    Add-Type @"
-                        using System;
-                        using System.Runtime.InteropServices;
-                        public class MouseHelper {
-                            [DllImport("user32.dll")]
-                            public static extern void mouse_event(int dwFlags, int dx, int dy, int dwData, int dwExtraInfo);
-                            public const int LEFTDOWN = 0x02;
-                            public const int LEFTUP = 0x04;
-                            public const int RIGHTDOWN = 0x08;
-                            public const int RIGHTUP = 0x10;
-                        }
-"@
-                    if ('${clickType}' -eq 'right') {
-                        [MouseHelper]::mouse_event([MouseHelper]::RIGHTDOWN, 0, 0, 0, 0)
-                        Start-Sleep -Milliseconds 50
-                        [MouseHelper]::mouse_event([MouseHelper]::RIGHTUP, 0, 0, 0, 0)
-                    } else {
-                        [MouseHelper]::mouse_event([MouseHelper]::LEFTDOWN, 0, 0, 0, 0)
-                        Start-Sleep -Milliseconds 50
-                        [MouseHelper]::mouse_event([MouseHelper]::LEFTUP, 0, 0, 0, 0)
+                const downFlags = clickType === 'right' ? 'Win32::MOUSEEVENTF_RIGHTDOWN' : 'Win32::MOUSEEVENTF_LEFTDOWN';
+                const upFlags = clickType === 'right' ? 'Win32::MOUSEEVENTF_RIGHTUP' : 'Win32::MOUSEEVENTF_LEFTUP';
+
+                if (this.psBridge && this.psBridge.stdin && this.psBridge.stdin.writable) {
+                    this.writeToPSBridge(`[Win32]::mouse_event([${downFlags}], 0, 0, 0, 0)`);
+                    await this.delay(50);
+                    this.writeToPSBridge(`[Win32]::mouse_event([${upFlags}], 0, 0, 0, 0)`);
+                    if (double) {
+                        await this.delay(100);
+                        this.writeToPSBridge(`[Win32]::mouse_event([${downFlags}], 0, 0, 0, 0)`);
+                        await this.delay(50);
+                        this.writeToPSBridge(`[Win32]::mouse_event([${upFlags}], 0, 0, 0, 0)`);
                     }
+                    resolve({ success: true, message: `Clicked at (${snapX}, ${snapY})` });
+                    return;
+                }
+
+                // Fallback
+                const clickScript = `
+                    [Win32]::mouse_event([${downFlags}], 0, 0, 0, 0)
+                    Start-Sleep -Milliseconds 50
+                    [Win32]::mouse_event([${upFlags}], 0, 0, 0, 0)
                 `;
                 
-                exec(`powershell -NoProfile -Command "${clickScript.replace(/\n/g, ' ').replace(/"/g, '\\"')}"`, { timeout: 5000 }, (error) => {
+                exec(`powershell -NoProfile -Command "${PS_HELPER_SCRIPT}; ${clickScript.replace(/\n/g, ' ').replace(/"/g, '\\"')}"`, { timeout: 5000 }, (error) => {
                     if (error) {
                         console.error('Click error:', error.message);
                         resolve({ success: false, error: 'Failed to click' });
                     } else {
-                        resolve({ success: true, message: `Clicked at (${x}, ${y})` });
+                        resolve({ success: true, message: `Clicked at (${snapX}, ${snapY})` });
                     }
                 });
             } catch (error) {
@@ -912,11 +1270,13 @@ class ActionExecutor {
     }
 
     async scroll(direction, amount = 3) {
+        const scrollValue = direction === 'up' ? (amount * 120) : -(amount * 120);
+        if (this.writeToPSBridge(`[Win32]::mouse_event([Win32]::MOUSEEVENTF_WHEEL, 0, 0, ${scrollValue}, 0)`)) {
+            return { success: true, message: `Scrolled ${direction}` };
+        }
+        // Fallback
         return new Promise((resolve) => {
-            // Scroll amount: positive = up, negative = down. Each "click" is 120 units
-            const scrollValue = direction === 'up' ? (amount * 120) : -(amount * 120);
             const psCommand = `${PS_HELPER_SCRIPT}; [Win32]::mouse_event([Win32]::MOUSEEVENTF_WHEEL, 0, 0, ${scrollValue}, 0)`;
-            
             exec(`powershell -NoProfile -Command "${psCommand.replace(/"/g, '\"').replace(/\n/g, ' ')}"`, (error) => {
                 if (error) {
                     resolve({ success: false, error: 'Failed to scroll' });
@@ -930,29 +1290,47 @@ class ActionExecutor {
     async drag(startX, startY, endX, endY) {
         return new Promise(async (resolve) => {
             try {
+                const snappedStart = await this.snapCoordinates(startX, startY);
+                const snappedEnd = await this.snapCoordinates(endX, endY);
+
                 // Move to start position
-                await this.moveMouse(startX, startY);
+                await this.moveMouse(snappedStart.x, snappedStart.y);
                 await this.delay(100);
                 
-                // Mouse down
+                if (this.psBridge && this.psBridge.stdin && this.psBridge.stdin.writable) {
+                    this.writeToPSBridge(`[Win32]::mouse_event([Win32]::MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)`);
+                    await this.delay(100);
+                    
+                    const steps = 10;
+                    for (let i = 1; i <= steps; i++) {
+                        const currentX = Math.round(snappedStart.x + (snappedEnd.x - snappedStart.x) * (i / steps));
+                        const currentY = Math.round(snappedStart.y + (snappedEnd.y - snappedStart.y) * (i / steps));
+                        this.writeToPSBridge(`[Win32]::SetCursorPos(${currentX}, ${currentY})`);
+                        await this.delay(20);
+                    }
+                    
+                    this.writeToPSBridge(`[Win32]::mouse_event([Win32]::MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)`);
+                    resolve({ success: true, message: `Dragged from (${snappedStart.x}, ${snappedStart.y}) to (${snappedEnd.x}, ${snappedEnd.y})` });
+                    return;
+                }
+
+                // Fallback
                 const downCmd = `${PS_HELPER_SCRIPT}; [Win32]::mouse_event([Win32]::MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)`;
                 await this.execPowerShell(downCmd);
                 await this.delay(100);
                 
-                // Move to end position (smooth drag)
                 const steps = 10;
                 for (let i = 1; i <= steps; i++) {
-                    const currentX = Math.round(startX + (endX - startX) * (i / steps));
-                    const currentY = Math.round(startY + (endY - startY) * (i / steps));
+                    const currentX = Math.round(snappedStart.x + (snappedEnd.x - snappedStart.x) * (i / steps));
+                    const currentY = Math.round(snappedStart.y + (snappedEnd.y - snappedStart.y) * (i / steps));
                     await this.moveMouse(currentX, currentY);
                     await this.delay(20);
                 }
                 
-                // Mouse up
                 const upCmd = `${PS_HELPER_SCRIPT}; [Win32]::mouse_event([Win32]::MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)`;
                 await this.execPowerShell(upCmd);
                 
-                resolve({ success: true, message: `Dragged from (${startX}, ${startY}) to (${endX}, ${endY})` });
+                resolve({ success: true, message: `Dragged from (${snappedStart.x}, ${snappedStart.y}) to (${snappedEnd.x}, ${snappedEnd.y})` });
             } catch (error) {
                 resolve({ success: false, error: 'Drag failed' });
             }
@@ -961,6 +1339,12 @@ class ActionExecutor {
 
     // Helper to execute PowerShell commands
     async execPowerShell(command) {
+        if (this.psBridge && this.psBridge.stdin && this.psBridge.stdin.writable) {
+            return new Promise((resolve) => {
+                this.writeToPSBridge(command);
+                resolve('OK');
+            });
+        }
         return new Promise((resolve, reject) => {
             exec(`powershell -NoProfile -Command "${command.replace(/"/g, '\"').replace(/\n/g, ' ')}"`, (error, stdout) => {
                 if (error) reject(error);
@@ -1238,11 +1622,14 @@ class ActionExecutor {
 
     async runCommand(command) {
         return new Promise((resolve) => {
-            exec(command, { shell: true }, (error, stdout, stderr) => {
+            exec(command, { shell: true, maxBuffer: 1024 * 1024, timeout: 30000 }, (error, stdout, stderr) => {
                 if (error) {
+                    // Combine any partial stdout with stderr for complete picture
+                    const combinedOutput = [stdout, stderr].filter(s => s && s.trim()).join('\n');
                     resolve({ 
                         success: false, 
                         error: error.message,
+                        output: combinedOutput || error.message,
                         stderr: stderr 
                     });
                 } else {
@@ -1299,6 +1686,108 @@ class ActionExecutor {
             success: typeResult.success,
             message: `Opened ${appName} and typed text`
         };
+    }
+
+    async pasteOrTypeText(text) {
+        const value = String(text || '');
+        if (!value) return { success: false, error: 'No text provided' };
+
+        try {
+            const clip = await osTasks.setClipboard(value);
+            if (clip && clip.success !== false) {
+                await this.delay(80);
+                const pasted = await this.fastPressKey('ctrl+v');
+                if (pasted && pasted.success !== false) return pasted;
+            }
+        } catch (e) {
+            console.warn('[action-executor] Clipboard paste failed, falling back to SendKeys:', e.message);
+        }
+
+        const typed = await screenAgent.typeText(value);
+        return typed && typed.success !== false ? typed : this.typeText(value);
+    }
+
+    async fastPressKey(key) {
+        const fast = await screenAgent.pressKey(key);
+        return fast && fast.success !== false ? fast : this.pressKey(key);
+    }
+
+    async postBackendJson(endpoint, payload, timeoutMs = 90000) {
+        const http = require('http');
+        const Store = require('electron-store');
+        const store = new Store();
+        const backendUrl = this.normalizeBackendUrl(store.get('colabUrl'));
+        const body = JSON.stringify(payload || {});
+
+        return new Promise((resolve, reject) => {
+            const req = http.request(`${backendUrl}${endpoint}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+            }, res => {
+                let data = '';
+                res.on('data', chunk => data += chunk);
+                res.on('end', () => {
+                    try {
+                        const parsed = data ? JSON.parse(data) : {};
+                        if (res.statusCode >= 400) {
+                            reject(new Error(parsed.detail || parsed.error || `Backend ${res.statusCode}`));
+                        } else {
+                            resolve(parsed);
+                        }
+                    } catch {
+                        reject(new Error(data || `Backend ${res.statusCode}`));
+                    }
+                });
+            });
+            req.on('error', reject);
+            req.setTimeout(timeoutMs, () => {
+                req.destroy();
+                reject(new Error(`Backend request ${endpoint} timed out after ${timeoutMs}ms`));
+            });
+            req.write(body);
+            req.end();
+        });
+    }
+
+    async captureScreenshotBase64() {
+        const screenshot = require('screenshot-desktop');
+        const buffer = await screenshot({ format: 'jpg' });
+        return buffer.toString('base64');
+    }
+
+    async verifyWhatsAppMessageSent(recipient, body) {
+        try {
+            const screenshotB64 = await this.captureScreenshotBase64();
+            const verify = await this.postBackendJson('/verify', {
+                screenshot: screenshotB64,
+                task: `Send a WhatsApp message to "${recipient}" with the exact message "${body}"`,
+                expected_result: `The WhatsApp chat for "${recipient}" is open and the latest visible outgoing message is exactly "${body}". Return success=false if the screen is still on contact search, no chat is open, the recipient is different, or the message is not visible as sent.`
+            }, 120000);
+
+            return {
+                success: verify && verify.success === true,
+                observation: verify?.observation || '',
+                raw: verify
+            };
+        } catch (e) {
+            return {
+                success: false,
+                observation: `verification_error: ${e.message}`,
+                error: e.message
+            };
+        }
+    }
+
+    async sendWhatsAppMessage(contact, message, shouldSend = true) {
+        const recipient = String(contact || '').trim();
+        const body = String(message || '').trim();
+        if (!recipient) return { success: false, error: 'WhatsApp contact is required' };
+        if (!body) return { success: false, error: 'WhatsApp message is required' };
+        return await whatsappHandler.sendMessage({
+            contact: recipient,
+            message: body,
+            send: shouldSend
+        });
     }
 
     // PowerPoint: Create new slide
@@ -1595,6 +2084,34 @@ class ActionExecutor {
         return resolved;
     }
 
+    async checkOfficeInstalled(actionName) {
+        if (this._officeInstalledCache !== undefined) {
+            return this._officeInstalledCache;
+        }
+
+        return new Promise((resolve) => {
+            const cmd = `powershell -Command "
+                $ok = $false;
+                $paths = @('HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\excel.exe', 'HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\winword.exe', 'HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\powerpnt.exe');
+                foreach ($p in $paths) {
+                    if (Test-Path $p) { $ok = $true; break; }
+                }
+                if (-not $ok) {
+                    try {
+                        $excel = New-Object -ComObject Excel.Application -ErrorAction SilentlyContinue;
+                        if ($excel) { $ok = $true; [System.Runtime.InteropServices.Marshal]::ReleaseComObject($excel) | Out-Null; }
+                    } catch {}
+                }
+                Write-Output $ok
+            "`;
+            exec(cmd, (error, stdout) => {
+                const installed = stdout && stdout.trim().toLowerCase() === 'true';
+                this._officeInstalledCache = installed;
+                resolve(installed);
+            });
+        });
+    }
+
     // ============================================
     // Execute Action by Name (WITH SAFETY CHECK)
     // ============================================
@@ -1602,6 +2119,23 @@ class ActionExecutor {
     async execute(actionName, params = {}) {
         // Resolve all file paths (fix USERNAME, ~, Desktop etc.)
         params = this.resolveAllPaths(params);
+
+        // Check if Office COM action and verify if Office is installed
+        const isOfficeAction = actionName.startsWith('ppt_') || 
+                               actionName.startsWith('word_') || 
+                               actionName.startsWith('excel_') || 
+                               actionName.startsWith('onenote_') || 
+                               actionName.startsWith('publisher_');
+
+        if (isOfficeAction) {
+            const officeOk = await this.checkOfficeInstalled(actionName);
+            if (!officeOk) {
+                return {
+                    success: false,
+                    error: "Microsoft Office (Excel/Word/PowerPoint) is not installed on this system. COM automation actions cannot be executed."
+                };
+            }
+        }
 
         // 🛡️ SAFETY CHECK FIRST
         const safetyCheck = safetyGuard.validateAction(actionName, params);
@@ -1618,6 +2152,41 @@ class ActionExecutor {
         // Log warnings if any
         if (safetyCheck.warnings.length > 0) {
             console.warn('Safety warnings:', safetyCheck.warnings);
+        }
+
+        if (safetyCheck.requiresConfirmation && params.confirmed !== true) {
+            return {
+                success: false,
+                error: `Confirmation required before executing: ${actionName}`,
+                requiresConfirmation: true
+            };
+        }
+
+        if (actionName === 'app_engine') {
+            console.log(`[action-executor] Routing action to app_engine registry: "${params.app}" - "${params.operation}"`);
+            return await appHandlers.executeAppEngine(params.app, params.operation, params);
+        }
+
+        if (actionName === 'protocol_execute') {
+            const protocolId = params.protocol_id || params.protocolId || params.id;
+            const protocolParams = params.parameters || params.params || params;
+            return await protocolRegistry.executeProtocol(protocolId, protocolParams, async (stepAction, stepParams) => {
+                return await this.execute(stepAction, stepParams || {});
+            });
+        }
+
+        if (actionName.startsWith('browser_')) {
+            const operation = actionName.replace('browser_', '');
+            console.log(`[action-executor] Routing action to browser_engine: "${operation}"`);
+            return await browserAutomation.executeBrowserEngine(operation, params);
+        }
+
+        if (['create_presentation', 'create_ppt', 'create_slides', 'generate_presentation', 'generate_slides'].includes(actionName)) {
+            return await this.generatePPT({
+                ...params,
+                topic: params.topic || params.title || params.subject || 'Presentation',
+                title: params.title || params.topic || params.subject || 'Presentation',
+            });
         }
 
         const actions = {
@@ -1646,8 +2215,24 @@ class ActionExecutor {
             'replace-in-file': () => this.replaceInFile(params.file_path, params.search_text, params.replacement_text, params.replace_all !== false),
             'append_to_file': () => this.appendToFile(params.file_path, params.content),
             'append-to-file': () => this.appendToFile(params.file_path, params.content),
-            'search_files': () => fileManager.searchFiles(params.pattern, params.location),
-            'search-files': () => fileManager.searchFiles(params.pattern, params.location),
+            'search_files': () => fileManager.searchFiles(
+                params.pattern || params.search_term || params.query || params.name || params.term || '',
+                params.location || params.search_location || params.path || null,
+                params.max_results || params.maxResults || 50,
+                {
+                    includeFolders: params.include_folders !== false && params.includeFolders !== false,
+                    latest: Boolean(params.latest || params.sort === 'latest' || params.order === 'latest')
+                }
+            ),
+            'search-files': () => fileManager.searchFiles(
+                params.pattern || params.search_term || params.query || params.name || params.term || '',
+                params.location || params.search_location || params.path || null,
+                params.max_results || params.maxResults || 50,
+                {
+                    includeFolders: params.include_folders !== false && params.includeFolders !== false,
+                    latest: Boolean(params.latest || params.sort === 'latest' || params.order === 'latest')
+                }
+            ),
             'search_file_content': () => fileManager.searchFileContent(params.search_text, params.location, params.file_pattern),
             
             // Application control
@@ -1704,6 +2289,16 @@ class ActionExecutor {
             // Composite actions (multi-step)
             'open_app_and_type': () => this.openAppAndType(params.app_name, params.text, params.wait_time),
             'open_and_type': () => this.openAppAndType(params.app_name, params.text, params.wait_time),
+            'send_whatsapp_message': () => this.sendWhatsAppMessage(
+                params.contact || params.recipient || params.name,
+                params.message || params.text || params.body,
+                params.send !== false
+            ),
+            'whatsapp_send_message': () => this.sendWhatsAppMessage(
+                params.contact || params.recipient || params.name,
+                params.message || params.text || params.body,
+                params.send !== false
+            ),
             
             // PowerPoint specific
             'ppt_new_slide': () => this.pptNewSlide(),
@@ -1712,7 +2307,15 @@ class ActionExecutor {
             'powerpoint_new_slide': () => this.pptNewSlide(),
             'powerpoint_add_title': () => this.pptAddTitle(params.title || params.text),
             'powerpoint_add_content': () => this.pptAddContent(params.content || params.text),
-            'create_presentation': () => this.createPresentation(params.title, params.save_path, params.slides_content),
+            'create_presentation': () => this.generatePPT({
+                ...params,
+                topic: params.topic || params.title || params.subject || 'Presentation',
+                title: params.title || params.topic || params.subject || 'Presentation',
+            }),
+            'create_ppt': () => this.generatePPT(params),
+            'create_slides': () => this.generatePPT(params),
+            'generate_presentation': () => this.generatePPT(params),
+            'generate_slides': () => this.generatePPT(params),
             'generate_ppt': () => this.generatePPT(params),
 
             // PowerPoint COM automation (themes, animations, layouts)
@@ -1779,7 +2382,7 @@ class ActionExecutor {
             
             // File system utilities
             'check_file_exists': () => this.checkFileExists(params.filepath),
-            'search_files': () => this.searchFiles(params.search_term, params.file_type, params.search_location),
+            'search_files_legacy': () => this.searchFiles(params.search_term, params.file_type, params.search_location),
             'generate_unique_filename': () => this.generateUniqueFilename(params.filepath, params.content_description),
             
             // Word specific (backward compatibility)
@@ -1810,8 +2413,10 @@ class ActionExecutor {
             'create_copies': () => fileManager.createCopies(params.source_file, params.new_names, params.destination),
             'get_files_by_type': () => fileManager.getFilesByType(params.file_type, params.location, params.max_results),
             'get_file_info': () => fileManager.getFileInfo(params.file_path),
-            'open_file': () => fileManager.openFile(params.file_path),
-            'show_in_explorer': () => fileManager.showInExplorer(params.file_path),
+            'open_file': () => fileManager.openFile(params.file_path || params.path),
+            'open_path': () => fileManager.openFile(params.path || params.file_path),
+            'open_folder': () => fileManager.openFile(params.path || params.folder_path || params.file_path),
+            'show_in_explorer': () => fileManager.showInExplorer(params.file_path || params.path),
             
             // Application Management
             'search_applications': () => fileManager.searchApplications(params.app_name),
@@ -1873,7 +2478,7 @@ class ActionExecutor {
             'get_disk_space': () => systemManager.getDiskSpace(),
             'check_disk_space': () => systemManager.getDiskSpace(),
             'disk_usage': () => systemManager.getDiskSpace(),
-            'set_volume': () => systemManager.setVolume(params.volume),
+            'set_volume': () => systemManager.setVolume(params.volume ?? params.level),
             'change_volume': () => systemManager.setVolume(params.volume),
             'adjust_volume': () => systemManager.setVolume(params.volume),
             'lock_computer': () => systemManager.lockComputer(),
@@ -2032,12 +2637,24 @@ class ActionExecutor {
             'full_system_health': () => osTasks.getFullSystemHealth(),
             'list_fonts': () => osTasks.listInstalledFonts(),
             'get_installed_fonts': () => osTasks.listInstalledFonts(),
+            'relaunch_chrome': () => systemManager.forceRelaunchChrome(),
+            'restart_chrome': () => systemManager.forceRelaunchChrome(),
+            'reopen_chrome': () => systemManager.forceRelaunchChrome(),
+            'ensure_chrome_debug': () => systemManager.ensureChromeWithDebugPort(),
+            'check_chrome_debug': () => systemManager.isChromeDebugPortOpen().then(open => ({ success: true, debug_port_open: open, port: 9222 })),
+            'spotify_play': () => appHandlers.executeAppEngine('spotify', 'play_music', params),
+            'play_spotify': () => appHandlers.executeAppEngine('spotify', 'play_music', params),
+            'spotify_pause': () => appHandlers.executeAppEngine('spotify', 'pause_playback', params),
+            'spotify_next': () => appHandlers.executeAppEngine('spotify', 'next_track', params),
 
             // ── Browser Automation (browser-automation.js) ──────────────────
             'browser_open': () => browserAutomation.open(params.url, params.browser),
             'open_browser': () => browserAutomation.open(params.url, params.browser),
             'browser_navigate': () => browserAutomation.navigate(params.url),
             'navigate_to': () => browserAutomation.navigate(params.url),
+            'navigate_and_login': () => browserAutomation.navigateAndLogin(params),
+            'browser_navigate_login': () => browserAutomation.navigateAndLogin(params),
+            'browser_navigate_and_login': () => browserAutomation.navigateAndLogin(params),
             'browser_click': () => browserAutomation.click(params.selector || params.element),
             'browser_type': () => browserAutomation.type(params.selector || params.element, params.text),
             'browser_fill': () => browserAutomation.type(params.selector || params.element, params.text),
@@ -2048,6 +2665,7 @@ class ActionExecutor {
             'browser_scroll_up': () => browserAutomation.scroll('up', params.amount || 300),
             'browser_scroll_down': () => browserAutomation.scroll('down', params.amount || 300),
             'browser_wait_for': () => browserAutomation.waitFor(params.selector, params.timeout),
+            'browser_wait_ready': () => browserAutomation.waitReady(params.timeout || params.ms || 3000),
             'browser_close': () => browserAutomation.close(),
             'close_browser': () => browserAutomation.close(),
             'browser_login': () => browserAutomation.login(params.url, params.username, params.password, params.user_field, params.pass_field),
@@ -2055,6 +2673,14 @@ class ActionExecutor {
             'browser_smart_login': () => browserAutomation.smartLogin(params.url, params.name, params.email || params.username, params.password, params.is_new_user || false),
             'browser_signup': () => browserAutomation.smartLogin(params.url, params.name, params.email, params.password, true),
             'browser_create_account': () => browserAutomation.smartLogin(params.url, params.name, params.email, params.password, true),
+            'click_text': () => browserAutomation.clickByText(params.text || params.label || params.selector || '', { selector: params.selector, exact: params.exact }),
+            'browser_click_text': () => browserAutomation.clickByText(params.text || params.label || params.selector || '', { selector: params.selector, exact: params.exact }),
+            'fill_field': () => browserAutomation.typeInField(params.selector || params.field || params.label || params.name || '', params.value || params.text || ''),
+            'browser_fill_field': () => browserAutomation.typeInField(params.selector || params.field || params.label || params.name || '', params.value || params.text || ''),
+            'wait': async () => {
+                await new Promise(resolve => setTimeout(resolve, Math.max(0, Number(params.ms || params.seconds * 1000 || 1000))));
+                return { success: true, message: 'Waited.' };
+            },
             'browser_search_in_page': () => browserAutomation.searchInPage(params.text || params.query),
             'browser_chat': () => browserAutomation.searchInPage(params.text || params.message || params.query),
             'browser_detect_page': () => browserAutomation.detectPageState(),
@@ -2069,16 +2695,47 @@ class ActionExecutor {
             'browser_send_gmail': () => browserAutomation.sendGmail(params.to, params.subject, params.body, params.account_email || params.from || ''),
             'send_gmail': () => browserAutomation.sendGmail(params.to, params.subject, params.body, params.account_email || params.from || ''),
             'email_via_gmail': () => browserAutomation.sendGmail(params.to, params.subject, params.body, params.account_email || params.from || ''),
+            'gmail_compose': () => browserAutomation.composeGmail(params),
+            'compose_gmail': () => browserAutomation.composeGmail(params),
+            'save_google_credentials': () => browserAutomation.saveGoogleCredential(params.email || params.username || params.account_email, params.password),
+            'save_google_account': () => browserAutomation.saveGoogleCredential(params.email || params.username || params.account_email, params.password),
+            // 9.1: Forget/remove saved Google credentials from Windows Credential Manager
+            'forget_google_credentials': async () => {
+                const { execSync } = require('child_process');
+                const targets = ['pecifics_google_email', 'pecifics_google_password', 'pecifics_google_token'];
+                let removed = 0;
+                for (const t of targets) {
+                    try { execSync(`cmdkey /delete:${t}`, { encoding: 'utf8' }); removed++; } catch { /* not stored */ }
+                }
+                return { success: true, message: `Google credentials removed from Pecifics (${removed} entries cleared).` };
+            },
+            'remove_google_credentials': async () => {
+                const { execSync } = require('child_process');
+                const targets = ['pecifics_google_email', 'pecifics_google_password', 'pecifics_google_token'];
+                for (const t of targets) { try { execSync(`cmdkey /delete:${t}`, { encoding: 'utf8' }); } catch { } }
+                return { success: true, message: 'Google credentials cleared.' };
+            },
+            'browser_probe_state': () => browserAutomation.probeBrowserState(params),
             'browser_open_gmail': () => browserAutomation.openGmailAccount(params.email || params.account_email || ''),
             'open_gmail': () => browserAutomation.openGmailAccount(params.email || params.account_email || ''),
             'browser_youtube_search': () => browserAutomation.youtubeSearch(params.query),
             'youtube_search': () => browserAutomation.youtubeSearch(params.query),
+            'browser_play_video': () => browserAutomation.youtubePlay(params.query || params.video || params.title || params.search || params.prompt),
+            'youtube_play': () => browserAutomation.youtubePlay(params.query || params.video || params.title || params.search || params.prompt),
+            'play_youtube': () => browserAutomation.youtubePlay(params.query || params.video || params.title || params.search || params.prompt),
             'browser_go_back': () => browserAutomation.goBack(),
             'browser_go_forward': () => browserAutomation.goForward(),
             'browser_reload': () => browserAutomation.reload(),
             'browser_new_tab': () => browserAutomation.newTab(params.url),
             'browser_execute_script': () => browserAutomation.executeScript(params.script || params.js),
             'browser_fill_form': () => browserAutomation.fillForm(params.fields),
+            'google_forms_fill': () => browserAutomation.fillGoogleForm(params),
+            'google_form_fill': () => browserAutomation.fillGoogleForm(params),
+            'fill_google_form': () => browserAutomation.fillGoogleForm(params),
+            'google_forms_intelligent_fill': () => browserAutomation.fillGoogleForm({ ...params, auto_answer: true }),
+            'intelligent_google_form_fill': () => browserAutomation.fillGoogleForm({ ...params, auto_answer: true }),
+            'gamma_create_presentation': () => browserAutomation.gammaCreatePresentation(params.topic, params.instructions || params.prompt, params),
+            'gamma_probe': () => browserAutomation.gammaProbeState(params),
             'install_playwright': () => browserAutomation.installPlaywright(),
             'check_browser_ready': () => ({ success: true, ready: browserAutomation.isAvailable(), message: browserAutomation.isAvailable() ? 'Playwright ready' : 'Playwright not installed' })
         };

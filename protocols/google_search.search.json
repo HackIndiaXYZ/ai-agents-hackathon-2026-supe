@@ -1,0 +1,25 @@
+{
+  "id": "google_search.search",
+  "version": "1.0.0",
+  "domain": "google_search",
+  "capability": "search",
+  "description": "Run a Google web search through the browser engine.",
+  "risk": "low",
+  "requires_confirmation": false,
+  "parameters": {
+    "query": { "type": "string", "required": true }
+  },
+  "steps": [
+    {
+      "id": "search",
+      "primitive": "browser_dom",
+      "action": "browser_search",
+      "parameters": {
+        "query": "{{query}}"
+      }
+    }
+  ],
+  "state_checks": ["internet_available"],
+  "verification": ["search_results_page_opened"],
+  "fallbacks": ["open_url", "ask_user"]
+}

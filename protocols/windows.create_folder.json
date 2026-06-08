@@ -1,0 +1,26 @@
+{
+  "id": "windows.create_folder",
+  "version": "1.0.0",
+  "domain": "windows",
+  "capability": "create_folder",
+  "description": "Create a folder at a known Windows location.",
+  "risk": "low",
+  "requires_confirmation": false,
+  "parameters": {
+    "name": { "type": "string", "required": true },
+    "location": { "type": "string", "required": false, "default": "Desktop" }
+  },
+  "steps": [
+    {
+      "id": "create_folder",
+      "primitive": "os_api",
+      "action": "create_folder",
+      "parameters": {
+        "folder_path": "{{folder_path}}"
+      }
+    }
+  ],
+  "state_checks": ["parent_path_exists"],
+  "verification": ["folder_exists"],
+  "fallbacks": ["ask_user"]
+}

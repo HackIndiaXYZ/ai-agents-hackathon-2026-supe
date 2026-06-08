@@ -963,6 +963,20 @@ try {
         const script = `
             Set-ItemProperty -Path "HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize" -Name "AppsUseLightTheme" -Value ${value} -Type DWord
             Set-ItemProperty -Path "HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize" -Name "SystemUsesLightTheme" -Value ${value} -Type DWord
+            
+            # Broadcast setting change so theme applies instantly
+            $signature = @'
+            using System;
+            using System.Runtime.InteropServices;
+            public class Win32 {
+                [DllImport("user32.dll", EntryPoint="SendMessageTimeout", SetLastError=true, CharSet=CharSet.Auto)]
+                public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, IntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out IntPtr lpdwResult);
+            }
+'@
+            Add-Type -TypeDefinition $signature -ErrorAction SilentlyContinue | Out-Null
+            $result = [IntPtr]::Zero
+            [Win32]::SendMessageTimeout([IntPtr]0xffff, 0x001A, [IntPtr]::Zero, "ImmersiveColorSet", 2, 5000, [ref]$result) | Out-Null
+            
             Write-Output "Dark mode ${enable ? 'enabled' : 'disabled'}"
         `;
         return ps(script);

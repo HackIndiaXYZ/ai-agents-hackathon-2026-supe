@@ -1,0 +1,33 @@
+{
+  "id": "gmail.compose",
+  "version": "1.0.0",
+  "domain": "gmail",
+  "capability": "compose",
+  "description": "Compose and optionally send a Gmail message through Playwright DOM selectors.",
+  "risk": "high",
+  "requires_confirmation": true,
+  "parameters": {
+    "to": { "type": "string", "required": true },
+    "subject": { "type": "string", "required": false, "default": "Message from Pecifics" },
+    "body": { "type": "string", "required": true },
+    "account_email": { "type": "string", "required": false },
+    "send": { "type": "boolean", "required": false, "default": true }
+  },
+  "steps": [
+    {
+      "id": "compose_email",
+      "primitive": "browser_dom",
+      "action": "gmail_compose",
+      "parameters": {
+        "to": "{{to}}",
+        "subject": "{{subject}}",
+        "body": "{{body}}",
+        "account_email": "{{account_email}}",
+        "send": "{{send}}"
+      }
+    }
+  ],
+  "state_checks": ["browser_ready", "gmail_logged_in", "compose_window_ready"],
+  "verification": ["compose_fields_filled", "send_button_clicked_or_draft_created"],
+  "fallbacks": ["browser_probe_state", "targeted_vision", "ask_user"]
+}

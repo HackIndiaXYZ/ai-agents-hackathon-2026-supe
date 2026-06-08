@@ -3,7 +3,7 @@
 // Advanced file and application management
 // ============================================
 
-const { exec } = require('child_process');
+const { exec, execFile, spawn } = require('child_process');
 const fs = require('fs').promises;
 const path = require('path');
 const os = require('os');
@@ -37,6 +37,40 @@ class FileManager {
     // File Search Operations
     // ============================================
 
+    resolveFriendlyLocation(location) {
+        const raw = String(location || '').trim();
+        const home = os.homedir();
+        const oneDriveDesktop = path.join(home, 'OneDrive', 'Desktop');
+        const normalDesktop = path.join(home, 'Desktop');
+        if (!raw) return home;
+        if (/^(desktop|on desktop|the desktop)$/i.test(raw)) {
+            try {
+                require('fs').accessSync(oneDriveDesktop);
+                return oneDriveDesktop;
+            } catch {
+                return normalDesktop;
+            }
+        }
+        if (/^documents$/i.test(raw)) return path.join(home, 'Documents');
+        if (/^downloads$/i.test(raw)) return path.join(home, 'Downloads');
+        if (/^pictures$/i.test(raw)) {
+            const oneDrivePictures = path.join(home, 'OneDrive', 'Pictures');
+            try {
+                require('fs').accessSync(oneDrivePictures);
+                return oneDrivePictures;
+            } catch {
+                return path.join(home, 'Pictures');
+            }
+        }
+        if (raw.toLowerCase() === normalDesktop.toLowerCase()) {
+            try {
+                require('fs').accessSync(oneDriveDesktop);
+                return oneDriveDesktop;
+            } catch {}
+        }
+        return raw;
+    }
+
     /**
      * Search for files by name pattern across common locations
      * @param {string} pattern - File name pattern to search for (supports wildcards)
@@ -44,16 +78,84 @@ class FileManager {
      * @param {number} maxResults - Maximum number of results to return (default: 50)
      * @returns {Promise<object>} - Search results with file paths
      */
-    async searchFiles(pattern, location = null, maxResults = 50) {
+    async searchFiles(pattern, location = null, maxResults = 50, options = {}) {
         return new Promise((resolve) => {
+            const cleanPattern = String(pattern || '').trim();
+            if (!cleanPattern) {
+                resolve({
+                    success: false,
+                    error: 'Missing file search pattern',
+                    files: [],
+                    count: 0,
+                    message: 'Tell me what file or folder name to search for.'
+                });
+                return;
+            }
             // Escape special characters for PowerShell
-            const escapedPattern = pattern.replace(/'/g, "''");
-            const searchLocation = location || os.homedir();
+            const escapedPattern = cleanPattern.replace(/'/g, "''");
+            const searchLocation = this.resolveFriendlyLocation(location || os.homedir());
+            const includeFolders = options.includeFolders !== false;
+            const latest = Boolean(options.latest);
             
-            const psScript = `$pattern = '*${escapedPattern}*'; $searchPath = '${searchLocation.replace(/\\/g, '\\\\')}'; $maxResults = ${maxResults}; $results = @(); if (Test-Path $searchPath) { try { Get-ChildItem -Path $searchPath -Filter $pattern -Recurse -ErrorAction SilentlyContinue -File | Select-Object -First $maxResults | ForEach-Object { $results += [PSCustomObject]@{ Name = $_.Name; Path = $_.FullName; Size = $_.Length; Extension = $_.Extension; LastModified = $_.LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss') } } } catch { } }; if ($results.Count -eq 0) { Write-Output '[]' } else { $results | ConvertTo-Json -Compress }`;
+            const psScript = `
+                $pattern = '*${escapedPattern}*';
+                $searchPath = '${searchLocation.replace(/\\/g, '\\\\')}';
+                $maxResults = ${maxResults};
+                $includeFolders = ${includeFolders ? '$true' : '$false'};
+                $latest = ${latest ? '$true' : '$false'};
+                $results = @();
+
+                if (Test-Path $searchPath) {
+                    try {
+                        $conn = New-Object -ComObject ADODB.Connection -ErrorAction Stop;
+                        $conn.Open("Provider=Search.CollatorDSO;Extended Properties='Application=Windows';") | Out-Null;
+                        $sql = "SELECT System.ItemName, System.ItemPathDisplay, System.Size, System.FileExtension, System.DateModified FROM SystemIndex WHERE SCOPE='file:$searchPath' AND System.ItemName LIKE '%${escapedPattern}%'";
+                        $recordset = $conn.Execute($sql);
+                        $count = 0;
+                        while ($recordset -and -not $recordset.EOF -and $count -lt $maxResults) {
+                            $results += [PSCustomObject]@{
+                                Name = $recordset.Fields.Item("System.ItemName").Value;
+                                Path = $recordset.Fields.Item("System.ItemPathDisplay").Value;
+                                Size = $recordset.Fields.Item("System.Size").Value;
+                                Extension = $recordset.Fields.Item("System.FileExtension").Value;
+                                LastModified = if ($recordset.Fields.Item("System.DateModified").Value) { ([DateTime]$recordset.Fields.Item("System.DateModified").Value).ToString('yyyy-MM-dd HH:mm:ss') } else { '' }
+                            };
+                            $recordset.MoveNext();
+                            $count++;
+                        }
+                        $conn.Close() | Out-Null;
+                    } catch {}
+
+                    if ($results.Count -eq 0) {
+                        try {
+                            $items = Get-ChildItem -Path $searchPath -Filter $pattern -Recurse -Depth 5 -ErrorAction SilentlyContinue -Force;
+                            if (-not $includeFolders) { $items = $items | Where-Object { -not $_.PSIsContainer } }
+                            if ($latest) { $items = $items | Sort-Object LastWriteTime -Descending }
+                            $items | Select-Object -First $maxResults | ForEach-Object {
+                                $results += [PSCustomObject]@{
+                                    Name = $_.Name;
+                                    Path = $_.FullName;
+                                    Type = if ($_.PSIsContainer) { 'Folder' } else { 'File' };
+                                    Size = if ($_.PSIsContainer) { 0 } else { $_.Length };
+                                    Extension = if ($_.PSIsContainer) { '' } else { $_.Extension };
+                                    LastModified = $_.LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss')
+                                }
+                            }
+                        } catch {}
+                    }
+                }
+
+                if ($results.Count -eq 0) {
+                    Write-Output '[]'
+                } else {
+                    $results | ConvertTo-Json -Compress
+                }
+            `;
             
-            exec(`powershell -NoProfile -Command "${psScript}"`, 
-                { maxBuffer: 1024 * 1024 * 10 }, // 10MB buffer for large results
+            const encodedScript = Buffer.from(psScript, 'utf16le').toString('base64');
+            
+            execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', encodedScript],
+                { maxBuffer: 1024 * 1024 * 10, timeout: 15000 }, // 10MB buffer, 15s timeout
                 (error, stdout, stderr) => {
                     if (error && !stdout) {
                         console.error('Search error:', stderr);
@@ -70,7 +172,9 @@ class FileManager {
                                 success: true, 
                                 files: files,
                                 count: files.length,
-                                message: `Found ${files.length} file(s) matching "${pattern}"`
+                                message: files.length
+                                    ? `Found ${files.length} item(s) matching "${cleanPattern}"`
+                                    : `No items found matching "${cleanPattern}"`
                             });
                         } catch (parseError) {
                             console.error('Parse error:', parseError);
@@ -316,10 +420,38 @@ class FileManager {
         return new Promise((resolve) => {
             const escapedName = appName.replace(/'/g, "''");
             
-            // Build PowerShell with proper string concatenation to avoid expansion issues
-            const psScript = `$appName = '${escapedName}'; $pattern = "*$appName*"; $results = @(); try { Get-StartApps | Where-Object { $_.Name -like $pattern } | Select-Object -First 10 | ForEach-Object { $results += [PSCustomObject]@{ Name = $_.Name; AppId = $_.AppID; Type = 'StartMenu' } } } catch { }; try { $regPaths = @('HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*', 'HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*', 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*'); foreach ($regPath in $regPaths) { Get-ItemProperty $regPath -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like $pattern } | Select-Object -First 5 | ForEach-Object { $results += [PSCustomObject]@{ Name = $_.DisplayName; Publisher = $_.Publisher; Version = $_.DisplayVersion; InstallLocation = $_.InstallLocation; Type = 'Installed' } } } } catch { }; try { $exePattern = "*$appName*.exe"; Get-ChildItem 'C:\\Program Files' -Filter $exePattern -Recurse -ErrorAction SilentlyContinue -Depth 2 | Select-Object -First 3 | ForEach-Object { $results += [PSCustomObject]@{ Name = $_.BaseName; Path = $_.FullName; Type = 'Executable' } } } catch { }; if ($results.Count -eq 0) { Write-Output '[]' } else { $results | Select-Object -First 20 | ConvertTo-Json -Compress }`;
+            // Build PowerShell with properly escaped variables to prevent CMD/PowerShell double-quoted expansion
+            const psScript = `
+                \`$appName = '${escapedName}';
+                \`$pattern = '*' + \`$appName + '*';
+                \`$results = @();
+                try {
+                    Get-StartApps | Where-Object Name -like \`$pattern | Select-Object -First 10 | ForEach-Object {
+                        \`$results += [PSCustomObject]@{ Name = \`$PSItem.Name; AppId = \`$PSItem.AppID; Type = 'StartMenu' }
+                    }
+                } catch {};
+                try {
+                    \`$regPaths = @('HKLM:\\\\Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Uninstall\\\\*', 'HKLM:\\\\Software\\\\WOW6432Node\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Uninstall\\\\*', 'HKCU:\\\\Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Uninstall\\\\*');
+                    foreach (\`$regPath in \`$regPaths) {
+                        Get-ItemProperty \`$regPath -ErrorAction SilentlyContinue | Where-Object DisplayName -like \`$pattern | Select-Object -First 5 | ForEach-Object {
+                            \`$results += [PSCustomObject]@{ Name = \`$PSItem.DisplayName; Publisher = \`$PSItem.Publisher; Version = \`$PSItem.DisplayVersion; InstallLocation = \`$PSItem.InstallLocation; Type = 'Installed' }
+                        }
+                    }
+                } catch {};
+                try {
+                    \`$exePattern = '*' + \`$appName + '*.exe';
+                    Get-ChildItem 'C:\\\\Program Files' -Filter \`$exePattern -Recurse -ErrorAction SilentlyContinue -Depth 2 | Select-Object -First 3 | ForEach-Object {
+                        \`$results += [PSCustomObject]@{ Name = \`$PSItem.BaseName; Path = \`$PSItem.FullName; Type = 'Executable' }
+                    }
+                } catch {};
+                if (\`$results.Count -eq 0) {
+                    Write-Output '[]'
+                } else {
+                    \`$results | Select-Object -First 20 | ConvertTo-Json -Compress
+                }
+            `.replace(/\n/g, ' ').trim();
             
-            exec(`powershell -NoProfile -Command "${psScript}"`,
+            exec(`powershell -NoProfile -Command "${psScript.replace(/"/g, '\\"')}"`,
                 { maxBuffer: 1024 * 1024 * 10 },
                 (error, stdout, stderr) => {
                     if (error && !stdout) {
@@ -359,9 +491,9 @@ class FileManager {
      */
     async getRunningApplications() {
         return new Promise((resolve) => {
-            const psScript = `Get-Process | Where-Object { $_.MainWindowTitle -ne '' } | Select-Object -First 30 | ForEach-Object { [PSCustomObject]@{ Name = $_.ProcessName; Title = $_.MainWindowTitle; Id = $_.Id; Memory = [math]::Round($_.WorkingSet64 / 1MB, 2) } } | ConvertTo-Json -Compress`;
+            const psScript = `Get-Process | Where-Object MainWindowTitle -ne '' | Select-Object -First 30 | ForEach-Object { [PSCustomObject]@{ Name = \`$PSItem.ProcessName; Title = \`$PSItem.MainWindowTitle; Id = \`$PSItem.Id; Memory = [math]::Round(\`$PSItem.WorkingSet64 / 1MB, 2) } } | ConvertTo-Json -Compress`;
             
-            exec(`powershell -NoProfile -Command "${psScript}"`, (error, stdout, stderr) => {
+            exec(`powershell -NoProfile -Command "${psScript.replace(/"/g, '\\"')}"`, (error, stdout, stderr) => {
                 if (error && !stdout) {
                     console.error('Running apps error:', stderr);
                     resolve({ 
@@ -489,15 +621,22 @@ class FileManager {
      * @returns {Promise<object>} - Open result
      */
     async openFile(filePath) {
-        return new Promise((resolve) => {
-            exec(`start "" "${filePath}"`, (error) => {
-                if (error) {
-                    resolve({ success: false, error: `Failed to open file: ${error.message}` });
-                } else {
-                    resolve({ success: true, message: `Opened ${path.basename(filePath)}` });
-                }
-            });
-        });
+        const target = String(filePath || '').trim();
+        if (!target) return { success: false, error: 'No path provided' };
+        try {
+            const stat = await fs.stat(target);
+            if (stat.isDirectory()) {
+                const child = spawn('explorer.exe', [target], { detached: true, stdio: 'ignore', windowsHide: false });
+                child.unref();
+                return { success: true, message: `Opened ${path.basename(target) || target}`, path: target };
+            }
+        } catch (error) {
+            return { success: false, error: `Path not found: ${target}` };
+        }
+
+        const child = spawn('cmd.exe', ['/c', 'start', '', target], { detached: true, stdio: 'ignore', windowsHide: true });
+        child.unref();
+        return { success: true, message: `Opened ${path.basename(target)}`, path: target };
     }
 
     /**
