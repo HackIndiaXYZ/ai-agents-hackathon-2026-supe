@@ -1,0 +1,48 @@
+{
+  "id": "calendar.reminders",
+  "domain": "calendar",
+  "capability": "calendar_and_reminders",
+  "description": "Set reminders using Windows Task Scheduler (no external app needed), read Outlook calendar events, and manage scheduled tasks. Works offline.",
+  "risk": "low",
+  "requires_confirmation": false,
+  "parameters": {
+    "operation": {
+      "type": "string",
+      "required": true,
+      "enum": ["set_reminder", "get_events", "list_reminders", "cancel_reminder"],
+      "description": "What to do"
+    },
+    "message": {
+      "type": "string",
+      "required": false,
+      "description": "The reminder text (e.g. 'Call Dad', 'Submit assignment')"
+    },
+    "time": {
+      "type": "string",
+      "required": false,
+      "description": "When to remind (e.g. '5pm', '9:30am', 'in 30 minutes', 'tomorrow at 8am')"
+    },
+    "date": {
+      "type": "string",
+      "required": false,
+      "description": "Date for the reminder or calendar query (e.g. 'today', 'tomorrow', 'Monday')"
+    },
+    "reminder_name": {
+      "type": "string",
+      "required": false,
+      "description": "Name/ID of a reminder to cancel"
+    }
+  },
+  "steps": [
+    { "action": "calendar_operation", "parameters": { "operation": "{{operation}}", "message": "{{message}}", "time": "{{time}}", "date": "{{date}}", "reminder_name": "{{reminder_name}}" } }
+  ],
+  "fallbacks": ["ask_user"],
+  "example_commands": [
+    "remind me at 5pm to call Dad",
+    "set a reminder for tomorrow at 9am to submit report",
+    "what's on my calendar tomorrow",
+    "remind me in 30 minutes",
+    "show my upcoming events",
+    "cancel the 5pm reminder"
+  ]
+}

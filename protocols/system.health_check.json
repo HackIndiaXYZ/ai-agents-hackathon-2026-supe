@@ -1,0 +1,28 @@
+{
+  "id": "system.health_check",
+  "domain": "system",
+  "capability": "system_info",
+  "description": "Get real-time system health information: CPU usage, RAM, battery, disk space, running processes, network status, and more.",
+  "risk": "low",
+  "requires_confirmation": false,
+  "parameters": {
+    "metric": {
+      "type": "string",
+      "required": false,
+      "enum": ["cpu", "ram", "battery", "disk", "processes", "network", "all"],
+      "description": "Which metric to check. Default: 'all' gives a full summary."
+    }
+  },
+  "steps": [
+    { "action": "get_system_info", "parameters": { "metric": "{{metric}}" } }
+  ],
+  "fallbacks": [],
+  "example_commands": [
+    "how much RAM is free",
+    "what's my battery percentage",
+    "check CPU usage",
+    "which apps are using the most memory",
+    "how much disk space do I have",
+    "what's my system status"
+  ]
+}

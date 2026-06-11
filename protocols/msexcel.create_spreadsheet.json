@@ -1,0 +1,61 @@
+{
+  "id": "msexcel.create_spreadsheet",
+  "domain": "msexcel",
+  "capability": "create_excel_spreadsheet",
+  "description": "Create a fully formatted Microsoft Excel spreadsheet using AI-generated structured data. Supports headers, data rows, styled header rows, formulas, multiple sheets, and auto-fitted columns.",
+  "risk": "low",
+  "requires_confirmation": false,
+  "parameters": {
+    "topic": {
+      "type": "string",
+      "required": true,
+      "description": "What the spreadsheet should contain (e.g. 'monthly budget tracker', 'student grade sheet')"
+    },
+    "title": {
+      "type": "string",
+      "required": false,
+      "description": "Spreadsheet/workbook title. Auto-generated from topic if not provided."
+    },
+    "instructions": {
+      "type": "string",
+      "required": false,
+      "description": "Additional instructions about columns, data, formulas, or layout"
+    },
+    "filename": {
+      "type": "string",
+      "required": false,
+      "description": "Where to save the file. Defaults to Desktop with a sanitized title."
+    },
+    "sheet_name": {
+      "type": "string",
+      "required": false,
+      "description": "Name for the main worksheet. Defaults to 'Sheet1'."
+    }
+  },
+  "steps": [
+    {
+      "action": "generate_excel_spreadsheet_structure",
+      "parameters": {
+        "topic": "{{topic}}",
+        "title": "{{title}}",
+        "instructions": "{{instructions}}",
+        "sheet_name": "{{sheet_name}}"
+      }
+    },
+    {
+      "action": "create_excel_spreadsheet",
+      "parameters": {
+        "structure": "{{generated_structure}}",
+        "filename": "{{filename}}"
+      }
+    }
+  ],
+  "fallbacks": ["ask_user"],
+  "example_commands": [
+    "create an Excel spreadsheet for monthly expenses",
+    "make a student grade tracker in Excel",
+    "create a sales report spreadsheet",
+    "make an inventory tracking sheet in Excel",
+    "create a budget planner with totals in Excel"
+  ]
+}

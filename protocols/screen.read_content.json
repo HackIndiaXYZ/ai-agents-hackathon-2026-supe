@@ -1,0 +1,28 @@
+{
+  "id": "screen.read_content",
+  "domain": "screen",
+  "capability": "read_screen",
+  "description": "Read, understand, and answer questions about whatever is currently visible on the user's screen. Uses AI vision to extract text, describe UI elements, or summarize visible content.",
+  "risk": "low",
+  "requires_confirmation": false,
+  "parameters": {
+    "question": {
+      "type": "string",
+      "required": false,
+      "description": "Specific question to answer from the screen (e.g. 'what is the error message?'). If empty, gives a general description."
+    }
+  },
+  "steps": [
+    { "action": "capture_screenshot", "parameters": {} },
+    { "action": "read_screen", "parameters": { "question": "{{question}}" } }
+  ],
+  "fallbacks": ["ask_user"],
+  "example_commands": [
+    "what's on my screen",
+    "what does this error say",
+    "read the text on my screen",
+    "what am I looking at",
+    "describe what's open",
+    "what is this page about"
+  ]
+}

@@ -1,0 +1,48 @@
+{
+  "id": "pdf.create_and_read",
+  "domain": "pdf",
+  "capability": "pdf_operations",
+  "description": "Create PDFs from Word documents or text, and read/extract text content from existing PDF files. Supports conversion, text extraction, and AI summarization of PDF content.",
+  "risk": "low",
+  "requires_confirmation": false,
+  "parameters": {
+    "operation": {
+      "type": "string",
+      "required": true,
+      "enum": ["read", "summarize", "convert_from_word", "create_from_text"],
+      "description": "What to do: 'read' extracts text, 'summarize' gives AI summary, 'convert_from_word' converts .docx to .pdf, 'create_from_text' makes a PDF from plain text"
+    },
+    "filepath": {
+      "type": "string",
+      "required": false,
+      "description": "Path to the PDF or Word file to process"
+    },
+    "content": {
+      "type": "string",
+      "required": false,
+      "description": "For 'create_from_text': the text content to put in the PDF"
+    },
+    "output_path": {
+      "type": "string",
+      "required": false,
+      "description": "Where to save the output PDF. Defaults to Desktop."
+    },
+    "pages": {
+      "type": "string",
+      "required": false,
+      "description": "Page range to read (e.g. '1-5', 'all'). Default: 'all'."
+    }
+  },
+  "steps": [
+    { "action": "pdf_operation", "parameters": { "operation": "{{operation}}", "filepath": "{{filepath}}", "content": "{{content}}", "output_path": "{{output_path}}", "pages": "{{pages}}" } }
+  ],
+  "fallbacks": ["ask_user"],
+  "example_commands": [
+    "read this PDF",
+    "what does this PDF say",
+    "summarize the PDF",
+    "convert my Word doc to PDF",
+    "extract text from this PDF",
+    "read me the first 3 pages of the PDF"
+  ]
+}

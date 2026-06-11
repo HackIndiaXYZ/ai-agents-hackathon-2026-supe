@@ -1,0 +1,38 @@
+{
+  "id": "memory.recall_and_repeat",
+  "domain": "memory",
+  "capability": "task_recall",
+  "description": "Recall previous tasks, conversations and actions. Supports 'what did I do yesterday?', 'repeat my last task', 'show my history', and smart search through past actions.",
+  "risk": "low",
+  "requires_confirmation": false,
+  "parameters": {
+    "query": {
+      "type": "string",
+      "required": false,
+      "description": "What to search for in memory (e.g. 'last Monday', 'the report I made', 'emails I sent'). If empty, returns recent history."
+    },
+    "action": {
+      "type": "string",
+      "required": false,
+      "enum": ["recall", "repeat", "history"],
+      "description": "'recall' searches memory, 'repeat' re-runs the last matching task, 'history' lists recent tasks"
+    },
+    "days_back": {
+      "type": "integer",
+      "required": false,
+      "description": "How many days back to search. Default: 7."
+    }
+  },
+  "steps": [
+    { "action": "recall_memory", "parameters": { "query": "{{query}}", "action": "{{action}}", "days_back": "{{days_back}}" } }
+  ],
+  "fallbacks": ["ask_user"],
+  "example_commands": [
+    "what did I do yesterday",
+    "repeat my last task",
+    "show my recent history",
+    "what did I ask last Monday",
+    "create the same report as before",
+    "show me what I did this week"
+  ]
+}

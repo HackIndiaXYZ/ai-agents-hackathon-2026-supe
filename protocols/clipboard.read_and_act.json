@@ -1,0 +1,43 @@
+{
+  "id": "clipboard.read_and_act",
+  "domain": "clipboard",
+  "capability": "clipboard_action",
+  "description": "Read from the clipboard, summarize it, send its contents via messaging, or write new content to the clipboard.",
+  "risk": "low",
+  "requires_confirmation": false,
+  "parameters": {
+    "action": {
+      "type": "string",
+      "required": true,
+      "enum": ["read", "summarize", "send", "copy"],
+      "description": "What to do: 'read' returns clipboard text, 'summarize' gives an AI summary, 'send' sends via WhatsApp/email, 'copy' writes new content"
+    },
+    "contact": {
+      "type": "string",
+      "required": false,
+      "description": "Contact name for 'send' action"
+    },
+    "platform": {
+      "type": "string",
+      "required": false,
+      "enum": ["whatsapp", "email", "telegram"],
+      "description": "Platform to send clipboard content on"
+    },
+    "content": {
+      "type": "string",
+      "required": false,
+      "description": "For 'copy' action: the text to write to clipboard"
+    }
+  },
+  "steps": [
+    { "action": "clipboard_action", "parameters": { "action": "{{action}}", "contact": "{{contact}}", "platform": "{{platform}}", "content": "{{content}}" } }
+  ],
+  "fallbacks": ["ask_user"],
+  "example_commands": [
+    "read my clipboard",
+    "what did I copy",
+    "summarize what's on my clipboard",
+    "send clipboard to Rahul on WhatsApp",
+    "copy this text to clipboard"
+  ]
+}

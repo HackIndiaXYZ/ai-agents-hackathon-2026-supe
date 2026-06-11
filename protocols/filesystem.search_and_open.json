@@ -1,0 +1,43 @@
+{
+  "id": "filesystem.search_and_open",
+  "domain": "filesystem",
+  "capability": "file_search",
+  "description": "Search for files on the computer by name, type, date, or content keywords. Optionally open the found file.",
+  "risk": "low",
+  "requires_confirmation": false,
+  "parameters": {
+    "query": {
+      "type": "string",
+      "required": true,
+      "description": "What to search for (file name, extension, keyword, date hint like 'yesterday' or 'last week')"
+    },
+    "file_type": {
+      "type": "string",
+      "required": false,
+      "description": "File extension filter e.g. 'pdf', 'docx', 'xlsx', 'py'. Leave empty for all types."
+    },
+    "location": {
+      "type": "string",
+      "required": false,
+      "description": "Directory to search in. Defaults to Desktop, Documents, Downloads."
+    },
+    "open_result": {
+      "type": "boolean",
+      "required": false,
+      "description": "Whether to open the found file automatically. Default: true."
+    }
+  },
+  "steps": [
+    { "action": "search_files", "parameters": { "query": "{{query}}", "file_type": "{{file_type}}", "location": "{{location}}" } },
+    { "action": "open_file", "parameters": { "open_result": "{{open_result}}" } }
+  ],
+  "fallbacks": ["ask_user"],
+  "example_commands": [
+    "find my resume",
+    "open the Excel file from yesterday",
+    "find the PDF I downloaded last week",
+    "search for my project proposal",
+    "open the latest Word document",
+    "find files named budget"
+  ]
+}

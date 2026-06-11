@@ -1,0 +1,62 @@
+{
+  "id": "msword.create_document",
+  "domain": "msword",
+  "capability": "create_word_document",
+  "description": "Create a fully formatted Microsoft Word document using AI-generated structured content. Supports headings, paragraphs, bullet lists, tables, and proper document styling.",
+  "risk": "low",
+  "requires_confirmation": false,
+  "parameters": {
+    "topic": {
+      "type": "string",
+      "required": true,
+      "description": "What the document should be about (e.g. 'project proposal for AI startup')"
+    },
+    "title": {
+      "type": "string",
+      "required": false,
+      "description": "Document title. Auto-generated from topic if not provided."
+    },
+    "instructions": {
+      "type": "string",
+      "required": false,
+      "description": "Additional formatting or content instructions from the user"
+    },
+    "filename": {
+      "type": "string",
+      "required": false,
+      "description": "Where to save the file. Defaults to Desktop with a sanitized title."
+    },
+    "style": {
+      "type": "string",
+      "required": false,
+      "enum": ["professional", "academic", "casual", "report"],
+      "description": "Document tone/style. Default: professional"
+    }
+  },
+  "steps": [
+    {
+      "action": "generate_word_document_structure",
+      "parameters": {
+        "topic": "{{topic}}",
+        "title": "{{title}}",
+        "instructions": "{{instructions}}",
+        "style": "{{style}}"
+      }
+    },
+    {
+      "action": "create_word_document",
+      "parameters": {
+        "structure": "{{generated_structure}}",
+        "filename": "{{filename}}"
+      }
+    }
+  ],
+  "fallbacks": ["ask_user"],
+  "example_commands": [
+    "create a Word doc about machine learning",
+    "make a report on quarterly sales in Word",
+    "write a project proposal in MS Word",
+    "create a formal letter in Word to the manager",
+    "make a Word document with a comparison table of programming languages"
+  ]
+}
