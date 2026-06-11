@@ -1,0 +1,39 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.env
+
+# Node
+node_modules/
+*.log
+npm-debug.log*
+*.tsbuildinfo
+
+# Runtime/generated app state
+action_log.jsonl
+backend_stdout.log
+backend_stderr.log
+colab-backend/action_log.jsonl
+colab-backend/memory_store/
+
+# Electron build output
+jarvis-desktop/dist/
+jarvis-desktop/out/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Secrets / keys
+.env.local
+.env.*.local
+*.key
+secrets.json

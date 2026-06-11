@@ -1,0 +1,25 @@
+{
+  "id": "youtube.play_video",
+  "version": "1.0.0",
+  "domain": "youtube",
+  "capability": "play_video",
+  "description": "Search YouTube for a query and open the first playable video.",
+  "risk": "low",
+  "requires_confirmation": false,
+  "parameters": {
+    "query": { "type": "string", "required": true }
+  },
+  "steps": [
+    {
+      "id": "play_video",
+      "primitive": "browser_dom",
+      "action": "browser_play_video",
+      "parameters": {
+        "query": "{{query}}"
+      }
+    }
+  ],
+  "state_checks": ["internet_available"],
+  "verification": ["youtube_watch_url_opened"],
+  "fallbacks": ["browser_youtube_search", "open_url", "ask_user"]
+}

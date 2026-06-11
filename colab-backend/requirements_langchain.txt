@@ -1,0 +1,60 @@
+# =========================================================
+# Pecifics LangChain Backend — Requirements
+# Install with:  pip install -r requirements_langchain.txt
+# =========================================================
+
+# ── Core LangChain ──────────────────────────────────────
+langchain>=0.2.0
+langchain-core>=0.2.0
+langchain-community>=0.2.0
+
+# ── Open-source LLM providers (no API key needed) ───────
+# Ollama (local models: llama3, mistral, qwen, phi3…)
+langchain-ollama>=0.1.0
+
+# Groq cloud — FREE tier (llama-3.3-70b, mixtral-8x7b)
+# Get free key: https://console.groq.com
+langchain-groq>=0.1.0
+
+# Google Gemini — FREE tier vision (gemini-2.0-flash)
+# Get free key: https://aistudio.google.com/app/apikey
+google-generativeai>=0.7.0
+
+# HuggingFace Inference API — FREE tier
+# Get free token: https://huggingface.co/settings/tokens
+# (already included in langchain-community)
+
+# Local HuggingFace transformers (GPU — Kaggle / Colab)
+transformers>=4.40.0
+torch>=2.2.0
+accelerate>=0.30.0
+bitsandbytes>=0.43.0   # 4-bit quantization
+sentencepiece>=0.2.0
+langgraph>=0.2.0
+chromadb>=0.5.0
+
+# ── Optional: OpenAI (paid) ──────────────────────────────
+# langchain-openai>=0.1.0
+# openai>=1.30.0
+
+# ── Web framework ───────────────────────────────────────
+fastapi>=0.111.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.7.0
+
+# ── Utilities ───────────────────────────────────────────
+python-dotenv>=1.0.0
+requests>=2.32.0
+httpx>=0.27.0
+Pillow>=10.3.0
+aiofiles>=23.2.1
+tenacity>=8.3.0
+nest-asyncio>=1.6.0
+psutil>=5.9.0
+
+# ── Ngrok tunnel (optional, for remote/Kaggle access) ────
+pyngrok>=7.0.0
+
+# ── PowerPoint generation ───────────────────────────────
+python-pptx>=0.6.23
+lxml>=5.2.0

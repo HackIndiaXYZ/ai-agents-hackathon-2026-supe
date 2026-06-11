@@ -1,0 +1,68 @@
+* {
+    box-sizing: border-box;
+}
+
+html,
+body {
+    margin: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: transparent;
+    font-family: Inter, "Segoe UI", system-ui, sans-serif;
+}
+
+.hud {
+    width: calc(100% - 8px);
+    height: 36px;
+    margin: 4px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 0 13px;
+    border: 1px solid rgba(148, 163, 184, 0.28);
+    border-radius: 14px;
+    color: #e5f6ff;
+    background: rgba(8, 20, 32, 0.72);
+    box-shadow: 0 12px 36px rgba(0, 0, 0, 0.24);
+    backdrop-filter: blur(18px);
+    font-size: 13px;
+    font-weight: 700;
+}
+
+.dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 999px;
+    background: #22c55e;
+    box-shadow: 0 0 12px rgba(34, 197, 94, 0.85);
+    flex: 0 0 auto;
+}
+
+.dot.thinking,
+.dot.executing {
+    background: #f59e0b;
+    box-shadow: 0 0 12px rgba(245, 158, 11, 0.85);
+}
+
+.dot.listening {
+    background: #38bdf8;
+    box-shadow: 0 0 12px rgba(56, 189, 248, 0.85);
+}
+
+.dot.processing,
+.dot.speaking {
+    background: #a78bfa;
+    box-shadow: 0 0 12px rgba(167, 139, 250, 0.85);
+}
+
+.dot.error {
+    background: #ef4444;
+    box-shadow: 0 0 12px rgba(239, 68, 68, 0.85);
+}
+
+#hudText {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}

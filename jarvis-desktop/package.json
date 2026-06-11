@@ -1,0 +1,76 @@
+{
+  "name": "jarvis-desktop",
+  "version": "1.0.0",
+  "description": "Pecifics - AI Desktop Assistant with LAM capabilities",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "build": "electron-builder",
+    "build:win": "electron-builder --win",
+    "build:mac": "electron-builder --mac",
+    "build:linux": "electron-builder --linux",
+    "pack": "electron-builder --dir"
+  },
+  "author": "Your Name",
+  "license": "MIT",
+  "dependencies": {
+    "@nut-tree-fork/nut-js": "^4.2.6",
+    "axios": "^1.6.2",
+    "electron-store": "^8.1.0",
+    "node-notifier": "^10.0.1",
+    "open": "^10.0.0",
+    "playwright": "^1.58.2",
+    "say": "^0.16.0",
+    "screenshot-desktop": "^1.15.0",
+    "sharp": "^0.33.1"
+  },
+  "devDependencies": {
+    "electron": "^28.0.0",
+    "electron-builder": "^24.9.1"
+  },
+  "build": {
+    "appId": "com.pecifics.desktop",
+    "productName": "Pecifics",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "node_modules/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.ico",
+      "sign": null,
+      "signingHashAlgorithms": []
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico",
+      "installerHeaderIcon": "assets/icon.ico",
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Pecifics"
+    },
+    "mac": {
+      "target": "dmg",
+      "icon": "assets/icon.icns"
+    },
+    "linux": {
+      "target": "AppImage",
+      "icon": "assets/icon.png"
+    }
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "id": "spotify.play",
+  "version": "1.0.0",
+  "app": "Spotify",
+  "domain": "desktop",
+  "capability": "play_music",
+  "description": "Play a song, artist, album, or playlist in Spotify Desktop.",
+  "risk": "low",
+  "requires_confirmation": false,
+  "parameters": {
+    "query": {
+      "type": "string",
+      "required": true,
+      "description": "Song, artist, album, playlist, or music search query."
+    }
+  },
+  "steps": [
+    {
+      "id": "play_music",
+      "primitive": "app_handler",
+      "action": "app_engine",
+      "parameters": {
+        "app": "spotify",
+        "operation": "play_music",
+        "query": "{{query}}"
+      }
+    }
+  ],
+  "state_checks": ["spotify_installed_or_protocol_registered"],
+  "verification": ["spotify_window_opened", "playback_started_or_search_opened"],
+  "fallbacks": ["open_application", "keyboard_search", "ask_user"]
+}

@@ -1,0 +1,29 @@
+{
+  "id": "whatsapp.send_message",
+  "version": "1.0.0",
+  "domain": "whatsapp",
+  "capability": "send_message",
+  "description": "Open or focus WhatsApp Desktop, search for a contact, type a message, and send it.",
+  "risk": "medium",
+  "requires_confirmation": false,
+  "parameters": {
+    "contact": { "type": "string", "required": true },
+    "message": { "type": "string", "required": true },
+    "send": { "type": "boolean", "required": false, "default": true }
+  },
+  "steps": [
+    {
+      "id": "send_message",
+      "primitive": "app_handler",
+      "action": "send_whatsapp_message",
+      "parameters": {
+        "contact": "{{contact}}",
+        "message": "{{message}}",
+        "send": "{{send}}"
+      }
+    }
+  ],
+  "state_checks": ["whatsapp_window_visible", "contact_search_result_present", "message_input_ready"],
+  "verification": ["handler_step_success", "send_button_clicked"],
+  "fallbacks": ["whatsapp.open_chat", "uia", "targeted_vision", "ask_user"]
+}

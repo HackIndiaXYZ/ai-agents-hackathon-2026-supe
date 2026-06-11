@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src *;">
+    <title>Pecifics AI</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <!-- WebGL Jellyfish background -->
+    <canvas id="jellyfishBg" class="jf-canvas"></canvas>
+
+    <div class="app">
+        <!-- Titlebar -->
+        <header class="titlebar">
+            <div class="titlebar-left">
+                <div class="logo">
+                    <svg width="20" height="20" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <defs>
+                            <radialGradient id="jf-tb-core" cx="50%" cy="50%" r="50%">
+                                <stop offset="0%" stop-color="#bae6fd" stop-opacity="0.9"/>
+                                <stop offset="50%" stop-color="#38bdf8" stop-opacity="0.7"/>
+                                <stop offset="100%" stop-color="#1d4ed8" stop-opacity="0.4"/>
+                            </radialGradient>
+                        </defs>
+                        <circle cx="20" cy="20" r="18" fill="url(#jf-tb-core)" opacity="0.8"/>
+                        <line x1="20" y1="4" x2="36" y2="20" stroke="#bae6fd" stroke-opacity="0.4" stroke-width="0.8"/>
+                        <line x1="20" y1="4" x2="4" y2="20" stroke="#7dd3fc" stroke-opacity="0.4" stroke-width="0.8"/>
+                        <line x1="4" y1="20" x2="20" y2="36" stroke="#bae6fd" stroke-opacity="0.4" stroke-width="0.8"/>
+                        <line x1="36" y1="20" x2="20" y2="36" stroke="#7dd3fc" stroke-opacity="0.4" stroke-width="0.8"/>
+                        <circle cx="20" cy="20" r="2.5" fill="#7dd3fc" opacity="0.85"/>
+                        <circle cx="20" cy="20" r="15" stroke="url(#jf-tb-core)" stroke-width="0.8" stroke-opacity="0.5" fill="none"/>
+                    </svg>
+                </div>
+                <span class="app-name">Pecifics</span>
+                <span class="status-dot" id="statusDot" title="Disconnected"></span>
+            </div>
+            <div class="titlebar-right">
+                <button class="tb-btn" id="settingsBtn" title="Settings">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/>
+                    </svg>
+                </button>
+                <button class="tb-btn" id="minimizeBtn" title="Minimize">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                </button>
+                <button class="tb-btn close" id="closeBtn" title="Close">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="main" id="mainContent">
+            <!-- Chat View -->
+            <section class="view active" id="chatView">
+                <!-- Offline banner -->
+                <div class="offline-banner" id="offlineBanner">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                    Backend offline — run: <code>cd D:\LAM\colab-backend &amp;&amp; python langchain_backend.py</code>
+                    <button id="retryBtn">Retry</button>
+                </div>
+                <!-- Quota banner -->
+                <div class="offline-banner warning" id="quotaBanner" style="display: none; background: rgba(245, 158, 11, 0.15); border-color: #f59e0b; color: #fbbf24; margin-bottom: 10px;">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                    <span>Gemini API quota exceeded. Setup CogAgent URL in Settings or wait for reset.</span>
+                </div>
+                <!-- Messages -->
+                <div class="messages" id="chatContainer">
+                    <div class="welcome" id="welcomeMessage">
+                        <div class="welcome-icon">
+                            <svg width="48" height="48" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                <defs>
+                                    <radialGradient id="wg" cx="50%" cy="50%" r="50%">
+                                        <stop offset="0%" stop-color="#bae6fd" stop-opacity="0.9"/>
+                                        <stop offset="50%" stop-color="#38bdf8" stop-opacity="0.7"/>
+                                        <stop offset="100%" stop-color="#1d4ed8" stop-opacity="0.4"/>
+                                    </radialGradient>
+                                    <filter id="wg-blur"><feGaussianBlur stdDeviation="3"/></filter>
+                                </defs>
+                                <circle cx="20" cy="20" r="18" fill="url(#wg)" filter="url(#wg-blur)" opacity="0.5"/>
+                                <path d="M20 4 C28 4 36 11 36 20 C36 29 29 36 20 36 C11 36 4 29 4 20 C4 11 12 4 20 4Z" fill="url(#wg)" opacity="0.85"/>
+                                <line x1="20" y1="4" x2="36" y2="20" stroke="#bae6fd" stroke-opacity="0.4" stroke-width="0.8"/>
+                                <line x1="20" y1="4" x2="4" y2="20" stroke="#7dd3fc" stroke-opacity="0.4" stroke-width="0.8"/>
+                                <line x1="4" y1="20" x2="20" y2="36" stroke="#bae6fd" stroke-opacity="0.4" stroke-width="0.8"/>
+                                <line x1="36" y1="20" x2="20" y2="36" stroke="#7dd3fc" stroke-opacity="0.4" stroke-width="0.8"/>
+                                <circle cx="20" cy="20" r="3" fill="#bae6fd" opacity="0.9"/>
+                                <circle cx="20" cy="20" r="1.5" fill="#7dd3fc" opacity="0.85"/>
+                                <circle cx="20" cy="20" r="16" stroke="url(#wg)" stroke-width="0.8" stroke-opacity="0.5" fill="none"/>
+                            </svg>
+                        </div>
+                        <h2>What can I help you with?</h2>
+                        <p class="welcome-sub">I can control your entire PC — browser, files, apps, system settings</p>
+                        <div class="quick-actions">
+                            <button class="quick-btn" data-prompt="Open Chrome and search for today's weather">🌤 Search weather</button>
+                            <button class="quick-btn" data-prompt="Create a PowerPoint presentation about AI">📊 Create PPT</button>
+                            <button class="quick-btn" data-prompt="Open Gmail and compose a new email">✉️ Compose email</button>
+                            <button class="quick-btn" data-prompt="Take a screenshot and describe what's on my screen">📸 Describe screen</button>
+                            <button class="quick-btn" data-prompt="Set volume to 50% and enable dark mode">⚙️ System settings</button>
+                            <button class="quick-btn" data-prompt="Open File Explorer and show my Documents folder">📁 Open files</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Progress Bar -->
+                <div class="progress-area" id="progressArea">
+                    <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+                    <div class="progress-info">
+                        <span class="progress-text" id="progressText">Ready</span>
+                        <div class="progress-controls">
+                            <button class="resume-btn" id="resumeBtn" title="Resume" style="display: none;">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                                Resume
+                            </button>
+                            <button class="stop-btn" id="stopBtn" title="Stop">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+                                Stop
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Input -->
+                <div class="input-area">
+                    <div class="mode-toggle">
+                        <label class="switch">
+                            <input type="checkbox" id="previewToggle">
+                            <span class="slider"></span>
+                        </label>
+                        <span class="mode-label" id="modeLabel">Live Mode</span>
+                    </div>
+                    <div class="input-box">
+                        <textarea id="messageInput" placeholder="Ask Pecifics anything... (e.g. 'Open Chrome, create a file, and set volume to 50')" rows="1"></textarea>
+                        <button class="send-btn" id="sendBtn" title="Send (Enter)">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                        </button>
+                    </div>
+                    <div class="input-hint">
+                        <kbd>Enter</kbd> send &nbsp; <kbd>Shift+Enter</kbd> new line &nbsp; Supports multiple tasks in one prompt
+                    </div>
+                </div>
+            </section>
+
+            <!-- Settings View -->
+            <section class="view" id="settingsView">
+                <div class="settings">
+                    <div class="settings-header">
+                        <button class="back-btn" id="backBtn">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
+                        </button>
+                        <h2>Settings</h2>
+                    </div>
+
+                    <div class="setting-group">
+                        <h3>Connection</h3>
+                        <div class="setting-row">
+                            <label>Backend URL</label>
+                            <input type="text" id="colabUrl" placeholder="http://localhost:8000">
+                        </div>
+                        <div class="setting-row">
+                            <label>CogAgent URL (Kaggle ngrok)</label>
+                            <input type="text" id="cogagentUrl" placeholder="https://xxxx.ngrok.io">
+                            <p class="hint">Paste ngrok URL from Kaggle notebook. Leave empty to use Gemini for vision.</p>
+                        </div>
+                        <button class="test-btn" id="testConnectionBtn">Test Connection</button>
+                        <div class="conn-status" id="connectionStatus"></div>
+                        <div class="info-box">
+                            <strong>Do I need to run the backend?</strong><br>
+                            Yes — always run <code>python langchain_backend.py</code> locally. It's the task planner (Groq LLM). 
+                            CogAgent on Kaggle only handles vision. Both must be running together.
+                            <br><br>
+                            <strong>Quick start:</strong> In your LAM folder:<br>
+                            <code>cd colab-backend &amp;&amp; python langchain_backend.py</code>
+                        </div>
+                    </div>
+
+                    <div class="setting-group">
+                        <h3>Screenshot</h3>
+                        <div class="setting-row">
+                            <label>Capture Interval (ms)</label>
+                            <input type="number" id="screenshotInterval" min="500" max="5000" step="100" value="1000">
+                        </div>
+                        <div class="setting-row">
+                            <label>Quality</label>
+                            <div class="range-row">
+                                <input type="range" id="screenshotQuality" min="30" max="100" value="80">
+                                <span id="qualityValue">80%</span>
+                            </div>
+                        </div>
+                        <div class="setting-row checkbox">
+                            <label><input type="checkbox" id="autoCaptureToggle" checked> Auto-capture screenshots</label>
+                        </div>
+                    </div>
+
+                    <div class="setting-group">
+                        <h3>Window</h3>
+                        <div class="setting-row checkbox">
+                            <label><input type="checkbox" id="alwaysOnTop" checked> Always on top</label>
+                        </div>
+                        <div class="setting-row">
+                            <label>Hotkey</label>
+                            <input type="text" id="hotkey" value="CommandOrControl+Shift+J" readonly>
+                        </div>
+                    </div>
+
+                    <div class="setting-group">
+                        <h3>Saved Logins (Credentials Vault)</h3>
+                        <div class="credentials-list" id="credentialsList">
+                            <!-- Populated dynamically via JS -->
+                        </div>
+                        <div class="credentials-form">
+                            <h4>Add New Login</h4>
+                            <div class="setting-row">
+                                <label>Site Domain</label>
+                                <input type="text" id="credSite" placeholder="e.g. instagram.com">
+                            </div>
+                            <div class="setting-row">
+                                <label>Username / Email</label>
+                                <input type="text" id="credUser" placeholder="Username or email">
+                            </div>
+                            <div class="setting-row">
+                                <label>Password</label>
+                                <input type="password" id="credPass" placeholder="Password">
+                            </div>
+                            <button class="add-cred-btn" id="addCredBtn">Save Login</button>
+                        </div>
+                    </div>
+
+                    <div class="settings-footer">
+                        <button class="save-btn" id="saveSettingsBtn">Save Settings</button>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+    <!-- First-Launch Onboarding Overlay -->
+    <div class="onboarding-overlay" id="onboardingOverlay" style="display: none;">
+        <div class="onboarding-card">
+            <!-- Step 1: Welcome -->
+            <div class="onboarding-step active" data-step="1">
+                <div class="ob-icon">
+                    <svg width="48" height="48" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <defs>
+                            <radialGradient id="ob-g" cx="50%" cy="50%" r="50%">
+                                <stop offset="0%" stop-color="#bae6fd" stop-opacity="0.9"/>
+                                <stop offset="50%" stop-color="#38bdf8" stop-opacity="0.7"/>
+                                <stop offset="100%" stop-color="#1d4ed8" stop-opacity="0.4"/>
+                            </radialGradient>
+                        </defs>
+                        <circle cx="20" cy="20" r="18" fill="url(#ob-g)" opacity="0.8"/>
+                        <circle cx="20" cy="20" r="2.5" fill="#7dd3fc"/>
+                    </svg>
+                </div>
+                <h2>Welcome to Pecifics</h2>
+                <p>Your Large Action Model (LAM) assistant. Pecifics runs directly on your device to execute automations, manage system states, and control application workflows under your command.</p>
+                <div class="ob-actions">
+                    <button class="ob-next-btn">Get Started</button>
+                </div>
+            </div>
+
+            <!-- Step 2: Local Backend Setup -->
+            <div class="onboarding-step" data-step="2">
+                <div class="ob-icon">⚙️</div>
+                <h2>Task Planner Setup</h2>
+                <p>Pecifics requires a local FastAPI backend to orchestrate task planning. Please ensure the backend is running on your machine.</p>
+                <div class="ob-command-box">
+                    <code>cd colab-backend &amp;&amp; python langchain_backend.py</code>
+                </div>
+                <div class="setting-row">
+                    <label>Local Backend URL</label>
+                    <input type="text" id="obColabUrl" value="http://localhost:8000">
+                </div>
+                <div class="ob-verification-row">
+                    <button class="ob-test-btn" id="obTestBackendBtn">Test Local Backend</button>
+                    <span class="ob-test-status" id="obBackendStatus">Not tested</span>
+                </div>
+                <div class="ob-actions">
+                    <button class="ob-prev-btn">Back</button>
+                    <button class="ob-next-btn" id="obBackendNext" disabled>Next Step</button>
+                </div>
+            </div>
+
+            <!-- Step 3: Vision Agent Setup -->
+            <div class="onboarding-step" data-step="3">
+                <div class="ob-icon">👁️</div>
+                <h2>Vision Agent (CogAgent)</h2>
+                <p>For GUI/screen-based tasks, Pecifics uses CogAgent. You can run CogAgent on a free Kaggle GPU and enter its ngrok URL below, or leave it blank to default to local Gemini vision.</p>
+                <div class="setting-row">
+                    <label>CogAgent URL (Kaggle ngrok)</label>
+                    <input type="text" id="obCogagentUrl" placeholder="https://xxxx.ngrok-free.app">
+                </div>
+                <div class="ob-verification-row">
+                    <button class="ob-test-btn" id="obTestCogBtn">Test CogAgent</button>
+                    <span class="ob-test-status" id="obCogStatus">Not tested (optional)</span>
+                </div>
+                <div class="ob-actions">
+                    <button class="ob-prev-btn">Back</button>
+                    <button class="ob-next-btn">Next Step</button>
+                </div>
+            </div>
+
+            <!-- Step 4: Ready to Launch -->
+            <div class="onboarding-step" data-step="4">
+                <div class="ob-icon">🚀</div>
+                <h2>You're All Set!</h2>
+                <p>Pecifics is fully configured and ready to execute your automations. Here are a few useful tips before you begin:</p>
+                <ul class="ob-tips">
+                    <li>Toggle this window overlay using the hotkey: <kbd>Ctrl+Shift+J</kbd></li>
+                    <li>Toggle "Live Mode" vs "Preview Mode" to preview action execution paths safely</li>
+                    <li>Add website credentials to the vault in settings for auto-fill in automated browser tasks</li>
+                </ul>
+                <div class="ob-actions">
+                    <button class="ob-prev-btn">Back</button>
+                    <button class="ob-next-btn finish" id="obFinishBtn">Launch Pecifics</button>
+                </div>
+            </div>
+
+            <!-- Step Navigation Indicator -->
+            <div class="onboarding-progress">
+                <span class="ob-dot active" data-dot="1"></span>
+                <span class="ob-dot" data-dot="2"></span>
+                <span class="ob-dot" data-dot="3"></span>
+                <span class="ob-dot" data-dot="4"></span>
+            </div>
+        </div>
+    </div>
+
+    <script src="intent-router.js"></script>
+    <script src="renderer.js"></script>
+    <script src="three.min.js"></script>
+    <script src="jellyfish-webgl.js"></script>
+</body>
+</html>

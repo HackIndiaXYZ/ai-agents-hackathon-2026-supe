@@ -1,0 +1,27 @@
+{
+  "id": "whatsapp.open_chat",
+  "version": "1.0.0",
+  "domain": "whatsapp",
+  "capability": "open_chat",
+  "description": "Open or focus WhatsApp Desktop and open a contact chat without sending a message.",
+  "risk": "low",
+  "requires_confirmation": false,
+  "parameters": {
+    "contact": { "type": "string", "required": true }
+  },
+  "steps": [
+    {
+      "id": "open_chat",
+      "primitive": "app_handler",
+      "action": "send_whatsapp_message",
+      "parameters": {
+        "contact": "{{contact}}",
+        "message": " ",
+        "send": false
+      }
+    }
+  ],
+  "state_checks": ["whatsapp_window_visible", "contact_search_result_present"],
+  "verification": ["chat_opened"],
+  "fallbacks": ["uia", "targeted_vision", "ask_user"]
+}

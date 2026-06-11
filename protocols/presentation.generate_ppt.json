@@ -1,0 +1,29 @@
+{
+  "id": "presentation.generate_ppt",
+  "version": "1.0.0",
+  "domain": "presentation",
+  "capability": "generate_ppt",
+  "description": "Generate a local PPTX deck using the backend slide generator and open it.",
+  "risk": "low",
+  "requires_confirmation": false,
+  "parameters": {
+    "topic": { "type": "string", "required": true },
+    "title": { "type": "string", "required": false },
+    "save_path": { "type": "string", "required": false, "default": "Desktop" }
+  },
+  "steps": [
+    {
+      "id": "generate_ppt",
+      "primitive": "document_generator",
+      "action": "generate_ppt",
+      "parameters": {
+        "topic": "{{topic}}",
+        "title": "{{title}}",
+        "save_path": "{{save_path}}"
+      }
+    }
+  ],
+  "state_checks": ["backend_available", "python_pptx_available"],
+  "verification": ["pptx_file_created"],
+  "fallbacks": ["ask_user"]
+}

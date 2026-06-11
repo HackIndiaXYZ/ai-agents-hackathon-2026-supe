@@ -1,0 +1,28 @@
+{
+  "id": "gamma.create_presentation",
+  "version": "1.0.0",
+  "domain": "gamma",
+  "capability": "create_presentation",
+  "description": "Open Gamma and create a presentation from a topic when the user is already logged in.",
+  "risk": "medium",
+  "requires_confirmation": false,
+  "parameters": {
+    "topic": { "type": "string", "required": true },
+    "instructions": { "type": "string", "required": false }
+  },
+  "steps": [
+    {
+      "id": "create_gamma_deck",
+      "primitive": "browser_dom",
+      "action": "gamma_create_presentation",
+      "parameters": {
+        "topic": "{{topic}}",
+        "instructions": "{{instructions}}",
+        "url": "https://gamma.app"
+      }
+    }
+  ],
+  "state_checks": ["browser_ready", "gamma_logged_in"],
+  "verification": ["gamma_prompt_accepted_or_blocker_reported"],
+  "fallbacks": ["gamma.login", "targeted_vision", "ask_user"]
+}

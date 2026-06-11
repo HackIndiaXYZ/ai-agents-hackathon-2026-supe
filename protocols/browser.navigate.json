@@ -1,0 +1,31 @@
+{
+  "id": "browser.navigate",
+  "version": "1.0.0",
+  "domain": "browser",
+  "capability": "navigate",
+  "description": "Open a website in the Pecifics Chrome profile and optionally attempt a supported login flow.",
+  "risk": "low",
+  "requires_confirmation": false,
+  "parameters": {
+    "url": { "type": "string", "required": true },
+    "login": { "type": "boolean", "required": false, "default": false },
+    "login_method": { "type": "string", "required": false },
+    "site": { "type": "string", "required": false }
+  },
+  "steps": [
+    {
+      "id": "navigate",
+      "primitive": "browser_dom",
+      "action": "navigate_and_login",
+      "parameters": {
+        "url": "{{url}}",
+        "login": "{{login}}",
+        "login_method": "{{login_method}}",
+        "site": "{{site}}"
+      }
+    }
+  ],
+  "state_checks": ["browser_ready", "internet_available"],
+  "verification": ["url_opened", "login_attempted_when_requested"],
+  "fallbacks": ["browser_probe_state", "targeted_vision", "ask_user"]
+}

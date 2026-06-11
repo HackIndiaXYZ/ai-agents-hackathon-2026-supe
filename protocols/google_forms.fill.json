@@ -1,0 +1,35 @@
+{
+  "id": "google_forms.fill",
+  "version": "1.0.0",
+  "domain": "google_forms",
+  "capability": "fill",
+  "description": "Extract, understand, preview, and fill a Google Form through DOM field matching. Submission requires confirmation.",
+  "risk": "medium",
+  "requires_confirmation": true,
+  "parameters": {
+    "url": { "type": "string", "required": false },
+    "fields": { "type": "object", "required": false },
+    "auto_answer": { "type": "boolean", "required": false, "default": true },
+    "user_context": { "type": "string", "required": false },
+    "submit": { "type": "boolean", "required": false, "default": false },
+    "confirmed": { "type": "boolean", "required": false, "default": false }
+  },
+  "steps": [
+    {
+      "id": "fill_form",
+      "primitive": "browser_dom",
+      "action": "google_forms_fill",
+      "parameters": {
+        "url": "{{url}}",
+        "fields": "{{fields}}",
+        "auto_answer": "{{auto_answer}}",
+        "user_context": "{{user_context}}",
+        "confirmed": "{{confirmed}}",
+        "submit": "{{submit}}"
+      }
+    }
+  ],
+  "state_checks": ["browser_ready", "form_fields_detected"],
+  "verification": ["field_values_match"],
+  "fallbacks": ["targeted_vision", "ask_user"]
+}
