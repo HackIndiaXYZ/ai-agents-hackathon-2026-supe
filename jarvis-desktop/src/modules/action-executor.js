@@ -2358,7 +2358,82 @@ if ($target) {
             'excel_clear_formatting': () => excelCOM.clearFormatting(params.start_row, params.start_col, params.end_row, params.end_col),
             'excel_remove_background': () => excelCOM.removeBackgroundColor(params.start_row, params.start_col, params.end_row, params.end_col),
             'excel_change_font': () => excelCOM.changeFont(params.font_name, params.font_size, params.start_row, params.start_col, params.end_row, params.end_col),
-            
+
+            // ── AI-powered high-level document creation ─────────────────────
+            'create_word_document': () => this._createWordDocumentAI(params),
+            'create_excel_spreadsheet': () => this._createExcelSpreadsheetAI(params),
+
+            // ── Screen Reading ───────────────────────────────────────────────
+            'read_screen': async () => {
+                // Auto-capture screenshot if not provided
+                let screenshot = params.screenshot || null;
+                if (!screenshot) {
+                    try {
+                        screenshot = await this.captureScreenshotBase64();
+                    } catch (e) {
+                        console.warn('[read_screen] Screenshot capture failed:', e.message);
+                    }
+                }
+                const res = await this._callBackend('/read_screen', {
+                    screenshot,
+                    question: params.question || params.query || 'What is on my screen?',
+                });
+                return res;
+            },
+
+            // ── File Search & Open (backend-powered, broader scope) ──────────
+            'find_files': () => this._callBackend('/search_files', {
+                query: params.query || params.pattern || params.search_term || '',
+                file_type: params.file_type || null,
+                location: params.location || null,
+                max_results: params.max_results || 10,
+            }).then(async (res) => {
+                if (res && res.files && res.files.length > 0 && params.open_result !== false) {
+                    const { shell } = require('electron');
+                    const firstFile = res.files[0];
+                    const filePath = firstFile.path || firstFile.Path || firstFile.FullName || '';
+                    if (filePath) shell.openPath(filePath);
+                    res.opened = filePath;
+                    res.success = true;
+                } else if (res) {
+                    res.success = true;  // No results is still a success (just empty)
+                }
+                return res || { success: false, error: 'No response from backend', files: [] };
+            }),
+
+            // ── Clipboard ────────────────────────────────────────────────────
+            'clipboard_action': () => this._handleClipboard(params),
+
+            // ── System Info ──────────────────────────────────────────────────
+            'get_system_info': () => this._callBackend('/system_info', {
+                metric: params.metric || 'all',
+            }),
+
+            // ── Memory Recall ────────────────────────────────────────────────
+            'recall_memory': () => this._callBackend('/recall_memory', {
+                query: params.query || null,
+                action: params.action || 'recall',
+                days_back: params.days_back || 7,
+            }),
+
+            // ── PDF Operations ───────────────────────────────────────────────
+            'pdf_operation': () => this._callBackend('/pdf_operation', {
+                operation: params.operation || 'read',
+                filepath: params.filepath || params.file_path || null,
+                content: params.content || null,
+                output_path: params.output_path || null,
+                pages: params.pages || 'all',
+            }),
+
+            // ── Calendar & Reminders ─────────────────────────────────────────
+            'calendar_operation': () => this._callBackend('/calendar_operation', {
+                operation: params.operation || 'set_reminder',
+                message: params.message || null,
+                time: params.time || null,
+                date: params.date || null,
+                reminder_name: params.reminder_name || null,
+            }),
+
             // OneNote COM automation
             'onenote_open': () => onenoteCOM.openOneNote(),
             'onenote_create_page': () => onenoteCOM.createPage(params.title, params.section),
@@ -2652,9 +2727,28 @@ if ($target) {
             'open_browser': () => browserAutomation.open(params.url, params.browser),
             'browser_navigate': () => browserAutomation.navigate(params.url),
             'navigate_to': () => browserAutomation.navigate(params.url),
-            'navigate_and_login': () => browserAutomation.navigateAndLogin(params),
-            'browser_navigate_login': () => browserAutomation.navigateAndLogin(params),
-            'browser_navigate_and_login': () => browserAutomation.navigateAndLogin(params),
+            'navigate_and_login': async () => {
+                // Try Playwright/CDP first; if unavailable, fall back to shell.openExternal
+                if (params.url) {
+                    try {
+                        return await browserAutomation.navigateAndLogin(params);
+                    } catch (cdpErr) {
+                        console.warn('[navigate_and_login] CDP/Playwright failed, using shell.openExternal:', cdpErr.message);
+                        const { shell } = require('electron');
+                        await shell.openExternal(params.url);
+                        return { success: true, message: `Opened ${params.url} in your browser`, method: 'shell' };
+                    }
+                }
+                return { success: false, error: 'No URL provided' };
+            },
+            'browser_navigate_login': async () => {
+                try { return await browserAutomation.navigateAndLogin(params); }
+                catch { const { shell } = require('electron'); await shell.openExternal(params.url); return { success: true, method: 'shell' }; }
+            },
+            'browser_navigate_and_login': async () => {
+                try { return await browserAutomation.navigateAndLogin(params); }
+                catch { const { shell } = require('electron'); await shell.openExternal(params.url); return { success: true, method: 'shell' }; }
+            },
             'browser_click': () => browserAutomation.click(params.selector || params.element),
             'browser_type': () => browserAutomation.type(params.selector || params.element, params.text),
             'browser_fill': () => browserAutomation.type(params.selector || params.element, params.text),
@@ -3124,6 +3218,280 @@ if ($target) {
             'all': ['.docx', '.xlsx', '.pptx', '.pdf', '.txt', '.pub']
         };
         return typeMap[fileType.toLowerCase()] || ['.docx', '.xlsx', '.pptx'];
+    }
+
+    // ── AI-powered Word document creation ────────────────────────────────────
+    async _createWordDocumentAI(params) {
+        const axios = require('axios');
+        const path = require('path');
+        const os = require('os');
+
+        const topic = params.topic || params.title || 'document';
+        const instructions = params.instructions || params.content || '';
+        const style = params.style || 'professional';
+        const BACKEND = process.env.PECIFICS_BACKEND_URL || 'http://localhost:8000';
+
+        try {
+            // 1. Ask backend to generate document structure via LLM
+            const resp = await axios.post(`${BACKEND}/generate_word_document`, {
+                topic, title: params.title, instructions, style
+            }, { timeout: 60000 });
+
+            const structure = resp.data.structure;
+            if (!structure || !structure.sections) {
+                return { success: false, error: 'Backend returned empty document structure' };
+            }
+
+            const title = structure.title || topic;
+            const safeTitle = title.replace(/[<>:"/\\|?*]/g, '').trim().substring(0, 60) || 'Document';
+            const filename = params.filename || path.join(os.homedir(), 'Desktop', `${safeTitle}.docx`);
+
+            // 2. Try Word COM (requires Microsoft Word installed)
+            try {
+                // Add a hard timeout to Word COM init — 15 seconds max
+                const comResult = await Promise.race([
+                    this._createWordViaComInternal(structure, title, filename, wordCOM),
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('Word COM timeout after 15s — Word may not be installed')), 15000))
+                ]);
+                return comResult;
+            } catch (comErr) {
+                console.warn('[word-doc] COM failed, trying backend fallback:', comErr.message);
+                // 3. Fallback: ask backend to create .docx using python-docx
+                try {
+                    const fbResp = await axios.post(`${BACKEND}/create_docx_file`, {
+                        structure, filename, topic
+                    }, { timeout: 30000 });
+                    if (fbResp.data && fbResp.data.success) {
+                        const { shell } = require('electron');
+                        shell.openPath(fbResp.data.path || filename);
+                        return { success: true, message: `Word document "${title}" created at ${fbResp.data.path || filename}`, filename };
+                    }
+                } catch (fbErr) {
+                    console.warn('[word-doc] Backend docx fallback also failed:', fbErr.message);
+                }
+                // Last resort: save as plain text
+                const fs = require('fs');
+                let textContent = `${title}\n${'='.repeat(title.length)}\n\n`;
+                for (const section of structure.sections || []) {
+                    textContent += `\n${section.heading}\n${'-'.repeat(section.heading.length)}\n`;
+                    for (const block of section.content || []) {
+                        if (block.type === 'paragraph') textContent += `${block.text}\n\n`;
+                        else if (block.type === 'bullet') textContent += block.items.map(i => `• ${i}`).join('\n') + '\n\n';
+                        else if (block.type === 'numbered') textContent += block.items.map((i,n) => `${n+1}. ${i}`).join('\n') + '\n\n';
+                    }
+                }
+                const txtPath = filename.replace(/\.docx$/i, '.txt');
+                fs.writeFileSync(txtPath, textContent, 'utf8');
+                const { shell } = require('electron');
+                shell.openPath(txtPath);
+                return { success: true, message: `Word not available — saved as text: ${txtPath}. Install Microsoft Word for .docx files.`, filename: txtPath };
+            }
+        } catch (e) {
+            return { success: false, error: e.message };
+        }
+    }
+
+    async _createWordViaComInternal(structure, title, filename, wordCOM) {
+        // 2. Create the Word document
+        await wordCOM.initializeSession();
+        await wordCOM.createDocument('', ''); // blank doc
+
+        const subtitle = structure.subtitle || '';
+
+        // Write title as Heading 1 style
+        await wordCOM.addHeading(title, 1, { font_size: 24 });
+        if (subtitle) {
+            await wordCOM.addParagraph(subtitle, { font_size: 13, italic: true, alignment: 'center' });
+        }
+
+        // 3. Render each section
+        for (const section of structure.sections || []) {
+            const headingLevel = section.level || 2;
+            await wordCOM.addHeading(section.heading, headingLevel);
+
+            for (const block of section.content || []) {
+                switch (block.type) {
+                    case 'paragraph': {
+                        const cleanText = (block.text || '').replace(/\*\*(.+?)\*\*/g, '$1');
+                        await wordCOM.addParagraph(cleanText, { font_size: 12 });
+                        break;
+                    }
+                    case 'bullet':
+                    case 'numbered': {
+                        for (const item of block.items || []) {
+                            const prefix = block.type === 'bullet' ? '•  ' : '';
+                            await wordCOM.addParagraph(`${prefix}${item}`, { font_size: 12 });
+                        }
+                        break;
+                    }
+                    case 'table': {
+                        const headers = block.headers || [];
+                        const rows = block.rows || [];
+                        const totalRows = 1 + rows.length;
+                        const totalCols = headers.length;
+                        if (totalRows > 1 && totalCols > 0) {
+                            await wordCOM.insertTable(totalRows, totalCols);
+                            const fillCmd = `
+                                $tbl = $global:WordDoc.Tables.Item($global:WordDoc.Tables.Count)
+                                ${headers.map((h, i) => `$tbl.Cell(1,${i+1}).Range.Text = "${h.replace(/"/g, '`"')}"`).join('\n                                    ')}
+                                ${rows.map((row, ri) => row.map((cell, ci) => `$tbl.Cell(${ri+2},${ci+1}).Range.Text = "${String(cell).replace(/"/g, '`"')}"`).join('\n                                    ')).join('\n                                    ')}
+                                $tbl.Rows.Item(1).Range.Font.Bold = $true
+                                Write-Output "Table filled"
+                            `;
+                            await wordCOM.executeInSession(fillCmd);
+                        }
+                        break;
+                    }
+                }
+                await new Promise(r => setTimeout(r, 50));
+            }
+        }
+
+        // 4. Save document
+        await wordCOM.saveDocument(filename);
+
+        return {
+            success: true,
+            message: `Word document "${title}" created and saved to ${filename}`,
+            filename,
+            sections: structure.sections.length,
+        };
+    }
+
+    // ── AI-powered Excel spreadsheet creation ────────────────────────────────
+    async _createExcelSpreadsheetAI(params) {
+        const axios = require('axios');
+        const path = require('path');
+        const os = require('os');
+
+        const topic = params.topic || params.title || 'spreadsheet';
+        const instructions = params.instructions || '';
+        const BACKEND = process.env.PECIFICS_BACKEND_URL || 'http://localhost:8000';
+
+        try {
+            // 1. Ask backend to generate spreadsheet structure via LLM
+            const resp = await axios.post(`${BACKEND}/generate_excel_spreadsheet`, {
+                topic, title: params.title, instructions, sheet_name: params.sheet_name
+            }, { timeout: 60000 });
+
+            const structure = resp.data.structure;
+            if (!structure || !structure.sheets) {
+                return { success: false, error: 'Backend returned empty spreadsheet structure' };
+            }
+
+            // 2. Create the workbook
+            await excelCOM.initializeSession();
+            await excelCOM.createWorkbook();
+
+            let firstSheet = true;
+            for (const sheet of structure.sheets || []) {
+                if (!firstSheet) {
+                    await excelCOM.addWorksheet(sheet.name || '');
+                } else {
+                    // Rename the default sheet
+                    const renameCmd = `$global:ExcelWorkbook.ActiveSheet.Name = "${(sheet.name || 'Sheet1').replace(/"/g, '')}"; Write-Output "renamed"`;
+                    await excelCOM.executeInSession(renameCmd);
+                    firstSheet = false;
+                }
+
+                const headers = sheet.headers || [];
+                const dataRows = sheet.rows || [];
+                const hasTotals = sheet.has_totals && sheet.totals_row;
+
+                // Write headers
+                for (let c = 0; c < headers.length; c++) {
+                    await excelCOM.writeCell(1, c + 1, headers[c]);
+                }
+
+                // Style header row — bold + light blue background
+                if (headers.length > 0) {
+                    await excelCOM.formatRange(1, 1, 1, headers.length, {
+                        bold: true,
+                        bg_color: 'lightblue',
+                        border: true,
+                        font_size: 12,
+                    });
+                }
+
+                // Write data rows
+                for (let r = 0; r < dataRows.length; r++) {
+                    const row = dataRows[r];
+                    for (let c = 0; c < row.length; c++) {
+                        await excelCOM.writeCell(r + 2, c + 1, row[c]);
+                    }
+                }
+
+                // Write totals row if present
+                if (hasTotals) {
+                    const totalsRowNum = dataRows.length + 2;
+                    const totalsRow = sheet.totals_row || [];
+                    // Replace {n} placeholder with last data row number
+                    const lastDataRow = dataRows.length + 1;
+                    for (let c = 0; c < totalsRow.length; c++) {
+                        const val = String(totalsRow[c]).replace(/\{n\}/g, String(lastDataRow));
+                        await excelCOM.writeCell(totalsRowNum, c + 1, val);
+                    }
+                    // Bold the totals row
+                    await excelCOM.formatRange(totalsRowNum, 1, totalsRowNum, headers.length, { bold: true, border: true });
+                }
+
+                // Auto-fit all columns
+                await excelCOM.autoFitColumns();
+            }
+
+            // 3. Save workbook
+            const title = structure.title || topic;
+            const safeTitle = title.replace(/[<>:"/\\|?*]/g, '').trim().substring(0, 60) || 'Spreadsheet';
+            const filename = params.filename || path.join(os.homedir(), 'Desktop', `${safeTitle}.xlsx`);
+            await excelCOM.saveWorkbook(filename);
+
+            return {
+                success: true,
+                message: `Excel spreadsheet "${title}" created and saved to ${filename}`,
+                filename,
+                sheets: structure.sheets.length,
+            };
+        } catch (e) {
+            return { success: false, error: e.message };
+        }
+    }
+
+    // ── Generic backend caller ────────────────────────────────────────────────
+    async _callBackend(path, body = {}) {
+        const axios = require('axios');
+        const BACKEND = process.env.PECIFICS_BACKEND_URL || 'http://localhost:8000';
+        try {
+            const resp = await axios.post(`${BACKEND}${path}`, body, { timeout: 30000 });
+            return resp.data;
+        } catch (e) {
+            return { success: false, error: e.message };
+        }
+    }
+
+    // ── Clipboard (Electron-native first, backend fallback) ───────────────────
+    async _handleClipboard(params) {
+        const { clipboard } = require('electron');
+        const action = params.action || 'read';
+        try {
+            if (action === 'write' || action === 'copy') {
+                const text = params.content || '';
+                clipboard.writeText(text);
+                return { success: true, message: 'Copied to clipboard', action };
+            }
+            // Read
+            const text = clipboard.readText();
+            if (!text) return { success: true, text: '', message: 'Clipboard is empty', action };
+
+            if (action === 'summarize') {
+                // Ask backend to summarize
+                const res = await this._callBackend('/clipboard', { action: 'summarize', content: text });
+                return res;
+            }
+            return { success: true, text, length: text.length, action: 'read' };
+        } catch (e) {
+            // Fallback to backend
+            return this._callBackend('/clipboard', { action, content: params.content });
+        }
     }
 }
 

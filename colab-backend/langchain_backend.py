@@ -550,19 +550,45 @@ def _pictures_path_for_home(home: str) -> str:
     ]
     return next((p for p in candidates if os.path.isdir(p)), candidates[-1])
 
+# Common typo corrections for PPT topics
+_TYPO_CORRECTIONS = {
+    r"\binux\b": "Linux", r"\bpythn\b": "Python", r"\bpyhton\b": "Python",
+    r"\bjvaa\b": "Java", r"\bjava script\b": "JavaScript", r"\bjavscript\b": "JavaScript",
+    r"\bartifical\b": "Artificial", r"\bintelligance\b": "Intelligence",
+    r"\bmachin\b": "Machine", r"\blearining\b": "Learning", r"\blearnig\b": "Learning",
+    r"\bblockchian\b": "Blockchain", r"\bcyberscurity\b": "Cybersecurity",
+    r"\bcloud compuing\b": "Cloud Computing", r"\bcomputre\b": "Computer",
+    r"\bwoldwide\b": "Worldwide", r"\binternet\b": "Internet",
+    r"\bquantom\b": "Quantum", r"\bnural\b": "Neural", r"\bneural netwok\b": "Neural Network",
+    r"\bdeep learnig\b": "Deep Learning", r"\bdata sceince\b": "Data Science",
+    r"\brobtics\b": "Robotics", r"\bautomaion\b": "Automation",
+    r"\bphisics\b": "Physics", r"\bchemestry\b": "Chemistry", r"\bbiolgoy\b": "Biology",
+    r"\bhistroy\b": "History", r"\bgeograpy\b": "Geography", r"\bmathmatics\b": "Mathematics",
+    r"\benviroment\b": "Environment", r"\bsustanability\b": "Sustainability",
+}
+
+def _correct_typos(text: str) -> str:
+    """Apply common typo corrections to user input."""
+    for pattern, correction in _TYPO_CORRECTIONS.items():
+        text = re.sub(pattern, correction, text, flags=re.I)
+    return text
+
 def _topic_from_presentation_text(text: str) -> str:
     raw = re.sub(r"\s+", " ", text or "").strip()
     patterns = [
-        r"\b(?:ppt|presentation|slides|deck)\s+for\s+me\s+(?:on|about)\s+(.+)$",
-        r"\b(?:ppt|presentation|slides|deck)\s+(?:for|on|about)\s+(.+)$",
+        r"\b(?:ppt|powerpoint|presentation|slides|deck|slideshow)\s+for\s+me\s+(?:on|about)\s+(.+)$",
+        r"\b(?:ppt|powerpoint|presentation|slides|deck|slideshow)\s+(?:for|on|about)\s+(.+)$",
+        r"\b(?:create|make|generate|build)\s+(?:a\s+)?(?:ppt|powerpoint|presentation|slides|deck)\s+(?:on|about|for)\s+(.+)$",
         r"\b(?:on|about)\s+(.+)$",
     ]
     for pattern in patterns:
         m = re.search(pattern, raw, flags=re.I)
         if m and m.group(1).strip():
-            return m.group(1).strip(" \"'`")
-    cleaned = re.sub(r"\b(?:open|chrome|go|to|gam{1,4}a(?:\.app)?|create|make|generate|build|a|an|ppt|presentation|slides|deck|for|me|please|login|with|google|account)\b", " ", raw, flags=re.I)
-    return re.sub(r"\s+", " ", cleaned).strip(" \"'`") or "Presentation"
+            topic = m.group(1).strip(" \"'`")
+            return _correct_typos(topic)
+    cleaned = re.sub(r"\b(?:open|chrome|go|to|gam{1,4}a(?:\.app)?|create|make|generate|build|a|an|ppt|powerpoint|presentation|slides|slideshow|deck|for|me|please|login|with|google|account)\b", " ", raw, flags=re.I)
+    result = re.sub(r"\s+", " ", cleaned).strip(" \"'`") or "Presentation"
+    return _correct_typos(result)
 
 def _mentions_gamma(raw: str) -> bool:
     return bool(re.search(r"\bgam{1,4}a(?:\.app)?\b", raw or "", flags=re.I))
@@ -862,7 +888,7 @@ def _continuation_result_plan(message: str, session_id: str) -> Optional[Dict[st
         }
     return None
 
-def _parse_inferred_message_command(raw: str) -> Optional[Dict[str, str]]:
+def _parse_inferred_message_command(raw: str) -> Optional[Dict[str, Any]]:
     text = re.sub(r"\s+", " ", raw or "").strip()
     if not re.search(r"^(?:please\s+)?(?:(?:shoot|send|write)\s+(?:a\s+)?(?:msg|message|text|dm)|msg|message|send|text|tell|dm)\b", text, flags=re.I):
         return None
@@ -881,7 +907,7 @@ def _parse_inferred_message_command(raw: str) -> Optional[Dict[str, str]]:
             contact = direct.group(1).strip(" \"'`")
             message = direct.group(2).strip(" \"'`")
             if contact and message:
-                return {"contact": contact, "message": message, "send": True}
+                return {"contact": contact, "message": message, "send": "true"}
         cleaned = re.sub(r"^(?:please\s+)?(?:(?:shoot|send|write)\s+(?:a\s+)?(?:msg|message|text|dm)|msg|message|send|text|tell|dm)\s+(?:to\s+)?", "", text, flags=re.I).strip()
         colon = re.match(r"([^:]+):\s*(.+)$", cleaned)
         if colon:
@@ -901,7 +927,7 @@ def _parse_inferred_message_command(raw: str) -> Optional[Dict[str, str]]:
 
     if not contact or not message:
         return None
-    return {"contact": contact, "message": message, "send": True}
+    return {"contact": contact, "message": message, "send": "true"}
 
 def _clean_messaging_contact(value: str, app_words: str) -> str:
     value = re.sub(r'\b(?:open|launch)\b', ' ', value or '', flags=re.I)
@@ -1340,7 +1366,7 @@ def deterministic_protocol_plan(message: str, user_home: Optional[str] = None) -
             description=f"Search Google for: {query}",
         )
 
-    if re.search(r"\b(create|make|generate|build)\b", lower) and re.search(r"\b(ppt|powerpoint|presentation|slides|deck)\b", lower) and "presentation.generate_ppt" in protocols:
+    if re.search(r"\b(create|make|generate|build)\b", lower) and re.search(r"\b(ppt|powerpoint|presentation|slides|deck|slideshow|slidedeck)\b", lower) and "presentation.generate_ppt" in protocols:
         topic = _topic_from_presentation_text(raw)
         result = _protocol_plan(
             message=raw,
@@ -2257,8 +2283,8 @@ def query_task_recipe(task: str, max_distance: float = 0.25) -> Optional[Dict]:
             "id": res["ids"][0][0],
             "distance": distance,
             "task": (res.get("documents") or [[task]])[0][0],
-            "actions": json.loads(meta.get("actions") or "[]"),
-            "result": json.loads(meta.get("result") or "{}"),
+            "actions": json.loads(str(meta.get("actions") or "[]")),
+            "result": json.loads(str(meta.get("result") or "{}")),
         }
     except Exception as e:
         logger.warning(f"Recipe query failed: {e}")
@@ -2351,10 +2377,10 @@ def query_protocol_run_memory(command: str, protocol_id: Optional[str] = None, m
                 "document": documents[idx] if idx < len(documents) else "",
                 "protocol_id": meta.get("protocol_id"),
                 "success": bool(meta.get("success")),
-                "blockers_encountered": json.loads(meta.get("blockers_encountered") or "[]"),
-                "blockers_resolved": json.loads(meta.get("blockers_resolved") or "[]"),
-                "resolution_path": json.loads(meta.get("resolution_path") or "[]"),
-                "duration_ms": int(meta.get("duration_ms") or 0),
+                "blockers_encountered": json.loads(str(meta.get("blockers_encountered") or "[]")),
+                "blockers_resolved": json.loads(str(meta.get("blockers_resolved") or "[]")),
+                "resolution_path": json.loads(str(meta.get("resolution_path") or "[]")),
+                "duration_ms": int(meta.get("duration_ms") or 0),  # type: ignore[arg-type]
                 "command_template": meta.get("command_template") or "",
             })
         return rows[0] if rows else None
@@ -2415,14 +2441,14 @@ def protocol_confidence(protocol_id: Optional[str] = None) -> Dict[str, Any]:
             data = collection.get(include=["metadatas"])
         scores: Dict[str, Dict[str, Any]] = {}
         for meta in data.get("metadatas") or []:
-            pid = meta.get("protocol_id") or "unknown"
+            pid = str(meta.get("protocol_id") or "unknown")
             item = scores.setdefault(pid, {"runs": 0, "successes": 0, "failures": 0, "score": 0.5})
             item["runs"] += 1
             if meta.get("success"):
                 item["successes"] += 1
             else:
                 item["failures"] += 1
-            item["score"] += float(meta.get("confidence_delta") or 0)
+            item["score"] += float(meta.get("confidence_delta") or 0)  # type: ignore[arg-type]
         for item in scores.values():
             item["score"] = max(0.0, min(1.0, round(item["score"], 3)))
             item["flagged_for_review"] = item["runs"] >= 5 and item["score"] < 0.5
@@ -2650,7 +2676,7 @@ _llm = None
 def create_llm():
     if not HAS_GROQ or not GROQ_API_KEY:
         raise ValueError("GROQ_API_KEY not set. Free key: https://console.groq.com")
-    return ChatGroq(api_key=GROQ_API_KEY, model_name=GROQ_MODEL, temperature=0.1)
+    return ChatGroq(api_key=GROQ_API_KEY, model=GROQ_MODEL, temperature=0.1)
 
 def get_llm():
     global _llm
@@ -2673,7 +2699,7 @@ def _call(llm, prompt: str) -> str:
 # ─── VISION PROVIDER ─────────────────────────────────────────────────────────
 
 async def call_vision_provider(screenshot_b64: str, goal: str, step_history: list,
-                                w: int, h: int, cogagent_url: str = None) -> dict:
+                                w: int, h: int, cogagent_url: Optional[str] = None) -> dict:
     """Call CogAgent (Kaggle) or Gemini for vision actions."""
     
     # Priority 1: CogAgent on Kaggle (prefer dynamic URL from frontend)
@@ -2829,6 +2855,7 @@ async def _gemini_vision_act(b64, goal, history, w, h):
     ) or "(none)"
 
     prompt = VISION_ACT_PROMPT.format(goal=goal, history=history_str, w=w, h=h)
+    raw: str = ""  # initialized before try so except block can always reference it
     try:
         genai.configure(api_key=GEMINI_API_KEY)
         model = genai.GenerativeModel(GEMINI_MODEL)
@@ -2909,6 +2936,7 @@ USER: {user_message}
 
 Return ONLY valid JSON."""
 
+    raw: str = ""  # initialized before try so except block can always reference it
     try:
         raw = _call(llm, prompt).strip()
         logger.info(f"LLM response ({len(raw)} chars): {raw[:500]}")
@@ -3076,7 +3104,7 @@ async def route_intent(user_message: str) -> RouterResult:
             HumanMessage(content=f"{ROUTER_PROMPT}\\n\\nUSER COMMAND: {user_message}\\n\\nReturn ONLY the valid JSON:")
         ])
         raw = resp.content if hasattr(resp, "content") else str(resp)
-        raw = raw.strip()
+        raw = raw.strip() if isinstance(raw, str) else str(raw).strip()
         raw = re.sub(r"^```(?:json)?\\s*", "", raw)
         raw = re.sub(r"\\s*```$", "", raw)
         
@@ -4130,8 +4158,54 @@ async def chat(req: ChatRequest):
                            req.user_choice, extra)
         result["session_id"] = session_id
         save_session_message(session_id, "user", req.message)
-        save_session_message(session_id, "assistant", result.get("message", ""))
+        save_session_message(session_id, "assistant", str(result.get("message") or ""))
         return JSONResponse(content=result)
+    except Exception as e:
+        logger.error(traceback.format_exc())
+        raise HTTPException(500, str(e))
+
+
+class ConverseRequest(BaseModel):
+    message: str
+    conversation_history: Optional[List[Dict]] = []
+    session_id: Optional[str] = None
+
+
+@app.post("/converse")
+async def converse(req: ConverseRequest):
+    """Pure conversational response — no task execution, no recipe memory lookup.
+    Used for follow-up questions, greetings, meta-questions about past actions, etc."""
+    try:
+        llm = get_llm()
+    except Exception as e:
+        raise HTTPException(503, f"LLM unavailable: {e}")
+
+    session_id = req.session_id or str(uuid.uuid4())
+    history = load_session_messages(session_id, limit=10) + (req.conversation_history or [])
+
+    # Build context-aware prompt
+    history_text = ""
+    for msg in history[-8:]:
+        role = "User" if msg.get("role") == "user" else "Assistant"
+        content = str(msg.get("content", ""))[:300]
+        history_text += f"{role}: {content}\n"
+
+    prompt = f"""You are Pecifics, a friendly and helpful Windows desktop AI assistant.
+The user is having a conversation with you. Answer their question naturally and helpfully.
+You have memory of recent actions — if they ask about something you did (like "where did you search?"), 
+refer to the conversation history to answer accurately.
+
+Recent conversation:
+{history_text or "No prior history."}
+
+User: {req.message}
+Assistant:"""
+
+    try:
+        answer = _call(llm, prompt).strip()
+        save_session_message(session_id, "user", req.message)
+        save_session_message(session_id, "assistant", answer)
+        return {"answer": answer, "session_id": session_id, "success": True}
     except Exception as e:
         logger.error(traceback.format_exc())
         raise HTTPException(500, str(e))
@@ -4328,58 +4402,882 @@ Decide: continue|replace|done. Return JSON: {{"decision":"...","message":"...","
 async def generate_ppt_endpoint(req: GeneratePPTRequest):
     try: llm = get_llm()
     except Exception as e: raise HTTPException(503, str(e))
-    
-    title = req.title or req.topic.title()
-    content_prompt = f"""Generate {req.num_slides} slides about: {req.topic}
-Title: {title}
-{"Instructions: " + req.additional_instructions if req.additional_instructions else ""}
-Return JSON array: hero, two_column, big_number, comparison, quote types.
-First=hero, last=quote. Be specific."""
-    
+
+    # Apply typo correction to the topic
+    topic = _correct_typos(req.topic.strip())
+    title = _correct_typos(req.title or topic).strip()
+    if not title: title = topic
+
+    num_slides = max(req.num_slides, 8)  # Always at least 8 slides
+
+    content_prompt = f"""You are an expert presentation designer. Create a detailed, professional {num_slides}-slide presentation about: {topic}
+
+Presentation Title: {title}
+{('Special instructions: ' + req.additional_instructions) if req.additional_instructions else ''}
+
+SLIDE STRUCTURE RULES:
+- Slide 1: ALWAYS type=hero with a compelling title and 1-sentence subtitle
+- Slides 2-{num_slides-2}: Mix of two_column, big_number, comparison slides with RICH content
+- Last slide: ALWAYS type=quote with a memorable relevant quote
+
+CONTENT QUALITY RULES (critical - follow exactly):
+- Each two_column slide: left_content and right_content must each have 4-6 detailed bullet points (not vague)
+- Each bullet point must be a full informative sentence (15-30 words), not just a 2-word label
+- big_number slides: use real statistics, percentages, or key metrics about the topic
+- comparison slides: left_title vs right_title with 4-5 specific contrasting points each
+- hero subtitle: 1-2 sentence overview that sets context
+- Cover: history/background, key concepts, how it works, advantages, use cases, challenges, future trends
+
+OUTPUT: Return ONLY a valid JSON array (no markdown, no explanation):
+[
+  {{"type": "hero", "title": "Slide Title", "subtitle": "One-line compelling description"}},
+  {{"type": "two_column", "title": "Section Title", "left_content": ["Detailed point 1 with full context", "Detailed point 2 explaining clearly", "Detailed point 3 with specifics", "Detailed point 4"], "right_content": ["Detailed point A", "Detailed point B", "Detailed point C", "Detailed point D"]}},
+  {{"type": "big_number", "title": "Key Statistic", "number": "XX%", "description": "Full sentence explaining the significance of this number"}},
+  {{"type": "comparison", "title": "A vs B", "left_title": "Option A", "left_items": ["Specific trait 1", "Specific trait 2", "Specific trait 3", "Specific trait 4"], "right_title": "Option B", "right_items": ["Specific trait 1", "Specific trait 2", "Specific trait 3", "Specific trait 4"]}},
+  {{"type": "quote", "quote": "Memorable relevant quote about the topic", "author": "Author Name"}}
+]
+
+Generate exactly {num_slides} slides. Make every bullet point genuinely informative and specific to {topic}."""
+
     try:
         raw = _call(llm, content_prompt).strip()
         raw = re.sub(r"^```(?:json)?\s*", "", raw)
         raw = re.sub(r"\s*```$", "", raw)
-        slides_data = json.loads(raw)
+        # Handle cases where LLM wraps in object
+        if raw.startswith("{"):
+            parsed = json.loads(raw)
+            slides_data = parsed.get("slides", parsed.get("data", [parsed]))
+        else:
+            slides_data = json.loads(raw)
         if not isinstance(slides_data, list): slides_data = [slides_data]
-    except:
+    except Exception as parse_err:
+        logger.warning(f"PPT JSON parse error: {parse_err}")
         slides_data = [
-            {"type": "hero", "title": title, "subtitle": "Presentation"},
-            {"type": "quote", "quote": "The future belongs to those who prepare.", "author": "Malcolm X"}
+            {"type": "hero", "title": title, "subtitle": f"A comprehensive overview of {topic}"},
+            {"type": "two_column", "title": "Introduction",
+             "left_content": [f"What is {topic}?", "Core principles and fundamentals", "Historical background and origin", "Why it matters today"],
+             "right_content": ["Key terminology and concepts", "Scope and applicability", "Global relevance", "Related fields and disciplines"]},
+            {"type": "quote", "quote": "Knowledge is the foundation of all progress.", "author": "Unknown"}
         ]
-    
+
     try:
         from ppt_generator_pro import (PREMIUM_THEMES, create_hero_slide, create_two_column_slide,
             create_big_number_slide, create_comparison_slide, create_quote_slide, add_slide_transition_advanced)
         from pptx import Presentation as PptxPresentation
         from pptx.util import Inches
-        
+
         prs = PptxPresentation()
         prs.slide_width = Inches(10); prs.slide_height = Inches(7.5)
         colors = PREMIUM_THEMES.get(req.theme.lower().replace(" ","_"), PREMIUM_THEMES.get("gamma_modern"))
-        
+
+        slide_objs = []
         for idx, sd in enumerate(slides_data):
             t = sd.get("type", "two_column")
             try:
-                if t == "hero": s = create_hero_slide(prs, sd.get("title",title), sd.get("subtitle",""), colors)
-                elif t == "big_number": s = create_big_number_slide(prs, sd.get("title",""), sd.get("number",""), sd.get("description",""), colors)
-                elif t == "comparison": s = create_comparison_slide(prs, sd.get("title",""), sd.get("left_title","A"), sd.get("left_items",[]), sd.get("right_title","B"), sd.get("right_items",[]), colors)
-                elif t == "quote": s = create_quote_slide(prs, sd.get("quote",""), sd.get("author",""), colors)
-                else: s = create_two_column_slide(prs, sd.get("title",""), sd.get("left_content",[]), sd.get("right_content",[]), colors)
+                if t == "hero":
+                    s = create_hero_slide(prs, sd.get("title", title), sd.get("subtitle", f"A presentation on {topic}"), colors)
+                elif t == "big_number":
+                    s = create_big_number_slide(prs, sd.get("title",""), sd.get("number",""), sd.get("description",""), colors)
+                elif t == "comparison":
+                    s = create_comparison_slide(prs, sd.get("title",""), sd.get("left_title","A"), sd.get("left_items",[]), sd.get("right_title","B"), sd.get("right_items",[]), colors)
+                elif t == "quote":
+                    s = create_quote_slide(prs, sd.get("quote",""), sd.get("author",""), colors)
+                else:
+                    # Default: two_column with rich content
+                    left = sd.get("left_content", sd.get("points", sd.get("content", [])))
+                    right = sd.get("right_content", [])
+                    if not right and isinstance(left, list) and len(left) > 4:
+                        # Split single list into two columns
+                        mid = len(left) // 2
+                        right = left[mid:]; left = left[:mid]
+                    s = create_two_column_slide(prs, sd.get("title",""), left, right, colors)
                 add_slide_transition_advanced(s, ["zoom","reveal","morph","fade"][idx%4])
-            except Exception as se: logger.warning(f"Slide {idx}: {se}")
-        
+                slide_objs.append(s)
+            except Exception as se:
+                logger.warning(f"Slide {idx} ({t}): {se}")
+
         save_dir = _resolve_save_dir(req.save_path)
         os.makedirs(save_dir, exist_ok=True)
-        filename = re.sub(r'[\\/:*?"<>|]', '_', title) + ".pptx"
+        safe_title = re.sub(r'[\\/:*?"<>|]', '_', title)
+        filename = safe_title + ".pptx"
         full_path = os.path.join(save_dir, filename)
         prs.save(full_path)
-        return {"success": True, "path": full_path.replace("\\","/"), "slides_count": len(slides_data),
-                "message": f"Created '{title}' ({len(slides_data)} slides) at {full_path}"}
-    except ImportError as ie: raise HTTPException(500, f"ppt_generator_pro missing: {ie}")
+        return {"success": True, "path": full_path.replace("\\","/"),
+                "slides_count": len(slide_objs),
+                "topic": topic,
+                "message": f"Created '{title}' — {len(slide_objs)} detailed slides saved to {full_path}"}
+    except ImportError as ie:
+        raise HTTPException(500, f"ppt_generator_pro missing: {ie}")
     except Exception as e:
         logger.error(traceback.format_exc())
         raise HTTPException(500, str(e))
+
+
+# ─── MS WORD / EXCEL AI DOCUMENT GENERATION ──────────────────────────────────
+
+WORD_DOC_PROMPT = """You are an expert document writer. Given a topic and instructions, generate a richly structured Word document spec.
+
+RULES (follow exactly like Claude Sonnet formats documents):
+- Use a clear H1 title, then H2 section headings, H3 subsections where appropriate
+- Use bullet lists for key points (type: "bullet")
+- Use numbered lists for steps/procedures (type: "numbered")
+- Use tables for comparisons, data, or structured info (type: "table")
+- Use paragraphs for explanatory prose (type: "paragraph")
+- Bold important terms inline using **double asterisks** notation in text
+- Minimum 4 sections, each with meaningful content
+- Style: {style}
+
+OUTPUT: Return ONLY valid JSON in this exact structure:
+{{
+  "title": "Document Title",
+  "subtitle": "Optional subtitle",
+  "sections": [
+    {{
+      "heading": "Section Name",
+      "level": 1,
+      "content": [
+        {{"type": "paragraph", "text": "Introductory paragraph text here."}},
+        {{"type": "bullet", "items": ["Point one", "Point two", "Point three"]}},
+        {{"type": "table", "headers": ["Col1", "Col2", "Col3"], "rows": [["R1C1","R1C2","R1C3"],["R2C1","R2C2","R2C3"]]}},
+        {{"type": "numbered", "items": ["Step one", "Step two"]}}
+      ]
+    }}
+  ]
+}}
+
+TOPIC: {topic}
+INSTRUCTIONS: {instructions}
+"""
+
+EXCEL_SHEET_PROMPT = """You are an expert spreadsheet designer. Generate a structured Excel workbook spec for the given topic.
+
+RULES (create professional, data-rich spreadsheets):
+- Always start with a bold header row with descriptive column names
+- Include realistic sample data (at least 8-10 data rows)
+- Add a totals/summary row at the bottom where applicable using SUM formulas
+- Use multiple sheets if the data has distinct categories
+- Column widths should be reasonable (auto-fit)
+- Header row should be styled: bold, light blue background (#BDD7EE equivalent)
+
+OUTPUT: Return ONLY valid JSON in this exact structure:
+{{
+  "title": "Workbook Title",
+  "sheets": [
+    {{
+      "name": "Sheet Name",
+      "headers": ["Column1", "Column2", "Column3"],
+      "rows": [
+        ["value1", "value2", "value3"],
+        ["value4", "value5", "value6"]
+      ],
+      "totals_row": ["Total", "=SUM(B2:B{n})", "=SUM(C2:C{n})"],
+      "has_totals": true
+    }}
+  ]
+}}
+
+TOPIC: {topic}
+INSTRUCTIONS: {instructions}
+"""
+
+class DocGenerationRequest(BaseModel):
+    topic: str
+    title: Optional[str] = None
+    instructions: Optional[str] = None
+    style: Optional[str] = "professional"
+
+class SheetGenerationRequest(BaseModel):
+    topic: str
+    title: Optional[str] = None
+    instructions: Optional[str] = None
+    sheet_name: Optional[str] = None
+
+@app.post("/generate_word_document")
+async def generate_word_document(req: DocGenerationRequest):
+    """Generate a structured Word document spec using LLM, ready for word-com.js to render."""
+    try:
+        llm = get_llm()
+        prompt = WORD_DOC_PROMPT.format(
+            topic=req.topic,
+            instructions=req.instructions or "Make it comprehensive and well-structured.",
+            style=req.style or "professional"
+        )
+        raw: str = ""
+        raw = _call(llm, prompt).strip()
+        raw = re.sub(r"^```(?:json)?\s*", "", raw)
+        raw = re.sub(r"\s*```$", "", raw)
+        structure = json.loads(raw)
+        # Auto-set title if not provided
+        if req.title and not structure.get("title"):
+            structure["title"] = req.title
+        return {"success": True, "structure": structure, "topic": req.topic}
+    except json.JSONDecodeError as e:
+        logger.error(f"Word doc generation JSON error: {e}\nRaw: {raw[:300]}")
+        raise HTTPException(500, f"Failed to generate document structure: {e}")
+    except Exception as e:
+        logger.error(traceback.format_exc())
+        raise HTTPException(500, str(e))
+
+
+class DocxFileRequest(BaseModel):
+    structure: Dict[str, Any]
+    filename: Optional[str] = None
+    topic: Optional[str] = "document"
+
+@app.post("/create_docx_file")
+async def create_docx_file(req: DocxFileRequest):
+    """Create an actual .docx file from structure using python-docx (fallback when Word COM is unavailable)."""
+    try:
+        from docx import Document as DocxDocument
+        from docx.shared import Pt
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+    except ImportError:
+        raise HTTPException(500, "python-docx not installed. Run: pip install python-docx")
+    try:
+        structure = req.structure
+        import os as _os
+        doc = DocxDocument()
+        title_text = structure.get("title", req.topic or "Document")
+        subtitle_text = structure.get("subtitle", "")
+        title_para = doc.add_heading(title_text, 0)
+        title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        if subtitle_text:
+            sub = doc.add_paragraph(subtitle_text)
+            sub.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            if sub.runs: sub.runs[0].italic = True
+        for section in structure.get("sections", []):
+            heading_text = section.get("heading", "")
+            level = min(section.get("level", 2), 9)
+            doc.add_heading(heading_text, level=level)
+            for block in section.get("content", []):
+                btype = block.get("type", "paragraph")
+                if btype == "paragraph":
+                    clean = (block.get("text") or "").replace("**", "")
+                    doc.add_paragraph(clean)
+                elif btype in ("bullet", "bulleted_list"):
+                    for item in block.get("items", []):
+                        doc.add_paragraph(str(item), style="List Bullet")
+                elif btype in ("numbered", "numbered_list"):
+                    for item in block.get("items", []):
+                        doc.add_paragraph(str(item), style="List Number")
+                elif btype == "table":
+                    headers = block.get("headers", [])
+                    rows = block.get("rows", [])
+                    if headers and rows:
+                        table = doc.add_table(rows=1+len(rows), cols=len(headers))
+                        table.style = "Light Grid Accent 1"
+                        hrow = table.rows[0]
+                        for i, h in enumerate(headers):
+                            cell = hrow.cells[i]; cell.text = str(h)
+                            if cell.paragraphs[0].runs: cell.paragraphs[0].runs[0].bold = True
+                        for ri, row in enumerate(rows):
+                            trow = table.rows[ri+1]
+                            for ci, val in enumerate(row[:len(headers)]):
+                                trow.cells[ci].text = str(val)
+        safe_title = re.sub(r'[\\/:*?"<>|]', '_', title_text).strip()[:60] or "Document"
+        desktop = _os.path.join(_os.path.expanduser("~"), "Desktop")
+        filepath = req.filename or _os.path.join(desktop, f"{safe_title}.docx")
+        _os.makedirs(_os.path.dirname(filepath), exist_ok=True)
+        doc.save(filepath)
+        return {"success": True, "path": filepath, "title": title_text,
+                "message": f"Document saved to {filepath}"}
+    except Exception as e:
+        logger.error(traceback.format_exc())
+        raise HTTPException(500, str(e))
+
+
+@app.post("/generate_excel_spreadsheet")
+async def generate_excel_spreadsheet(req: SheetGenerationRequest):
+    """Generate a structured Excel spreadsheet spec using LLM, ready for excel-com.js to render."""
+    try:
+        llm = get_llm()
+        prompt = EXCEL_SHEET_PROMPT.format(
+            topic=req.topic,
+            instructions=req.instructions or "Make it practical and well-organised with realistic sample data.",
+        )
+        raw: str = ""
+        raw = _call(llm, prompt).strip()
+        raw = re.sub(r"^```(?:json)?\s*", "", raw)
+        raw = re.sub(r"\s*```$", "", raw)
+        structure = json.loads(raw)
+        if req.title:
+            structure["title"] = req.title
+        # Apply sheet name override to first sheet if given
+        if req.sheet_name and structure.get("sheets"):
+            structure["sheets"][0]["name"] = req.sheet_name
+        return {"success": True, "structure": structure, "topic": req.topic}
+    except json.JSONDecodeError as e:
+        logger.error(f"Excel sheet generation JSON error: {e}\nRaw: {raw[:300]}")
+        raise HTTPException(500, f"Failed to generate spreadsheet structure: {e}")
+    except Exception as e:
+        logger.error(traceback.format_exc())
+        raise HTTPException(500, str(e))
+
+
+# ─── FEATURE: INPUT CORRECTION (Groq-powered typo & intent fix) ───────────────
+
+class CorrectInputRequest(BaseModel):
+    text: str
+    context: Optional[str] = None  # e.g. "desktop assistant" for better correction
+
+@app.post("/correct_input")
+async def correct_input(req: CorrectInputRequest):
+    """Use Groq to fix typos and clarify user commands before intent routing."""
+    if not req.text or len(req.text.strip()) < 2:
+        return {"corrected": req.text, "changed": False}
+    
+    # Apply fast regex corrections first (no LLM cost)
+    fast_corrected = _correct_typos(req.text.strip())
+    
+    # Only call Groq if it's likely to help (long enough, has potential issues)
+    text = req.text.strip()
+    word_count = len(text.split())
+    
+    # Skip LLM for very short clear commands (e.g. "open chrome", "set volume 50")
+    if word_count <= 3 or fast_corrected.lower() != text.lower():
+        return {"corrected": fast_corrected, "changed": fast_corrected != text, "method": "regex"}
+    
+    try:
+        llm = get_llm()
+        prompt = f"""You are a command pre-processor for a Windows desktop AI assistant called Pecifics.
+Your job: Fix typos, spelling mistakes, and grammar in the user's command. Do NOT change the meaning or add new intent.
+Keep it natural and concise. If the command is already correct, return it as-is.
+
+Rules:
+- Fix obvious typos: "inux" → "Linux", "crate" → "create", "opn" → "open"
+- Fix spacing issues, capitalisation where needed
+- Do NOT rewrite commands, just fix errors
+- Return ONLY the corrected command text, nothing else, no quotes, no explanation
+
+User command: {text}
+Corrected command:"""
+        corrected = _call(llm, prompt).strip().strip('"\'')
+        # Sanity check - if Groq returned something wildly different, use regex version
+        if len(corrected) < 2 or len(corrected) > len(text) * 3:
+            corrected = fast_corrected
+        return {
+            "corrected": corrected,
+            "original": text,
+            "changed": corrected.lower() != text.lower(),
+            "method": "groq"
+        }
+    except Exception as e:
+        logger.warning(f"correct_input Groq failed: {e}")
+        return {"corrected": fast_corrected, "changed": fast_corrected != text, "method": "regex_fallback"}
+
+
+# ─── FEATURE: SCREEN READING ─────────────────────────────────────────────────
+
+class ReadScreenRequest(BaseModel):
+    screenshot: Optional[str] = None   # base64 jpeg
+    question: Optional[str] = None
+
+@app.post("/read_screen")
+async def read_screen(req: ReadScreenRequest):
+    """Answer a question about the current screen using AI vision."""
+    question = req.question or "Describe everything you see on this screen in detail."
+    if not req.screenshot:
+        # No screenshot — give a helpful text answer via Groq
+        try:
+            llm = get_llm()
+            answer = _call(llm, f"""The user is using a Windows desktop assistant and asked: "{question}"
+They have not provided a screenshot. Politely explain that to read the screen, you need the GEMINI_API_KEY environment variable set with a Gemini API key (free at https://makersuite.google.com/), OR describe what kind of information you'd normally provide for this question.""")
+            return {"answer": answer, "success": False, "provider": "groq_text", "note": "No screenshot available. Set GEMINI_API_KEY for vision."}
+        except Exception:
+            return {"answer": "No screenshot provided. Please set GEMINI_API_KEY to enable screen reading.", "success": False}
+    try:
+        if HAS_GEMINI and GEMINI_API_KEY:
+            genai.configure(api_key=GEMINI_API_KEY)
+            model = genai.GenerativeModel(GEMINI_MODEL)
+            img_data = base64.b64decode(req.screenshot)
+            resp = model.generate_content([
+                f"Look at this screenshot carefully. {question}\n\nBe specific, read all visible text, mention app names, error messages, and any important numbers or labels.",
+                {"mime_type": "image/jpeg", "data": img_data}
+            ], generation_config={"temperature": 0.1, "max_output_tokens": 1024})
+            return {"answer": resp.text.strip(), "success": True, "provider": "gemini"}
+        # Fallback: Groq text only (describe what question is about)
+        llm = get_llm()
+        answer = _call(llm, f"The user asked: '{question}' while looking at their screen. Explain that you need vision capability (GEMINI_API_KEY) to see the screen, and suggest they describe what they see.")
+        return {"answer": answer, "success": False, "provider": "text_only"}
+    except Exception as e:
+        logger.error(traceback.format_exc())
+        raise HTTPException(500, str(e))
+
+
+# ─── FEATURE: FILE SEARCH ─────────────────────────────────────────────────────
+
+class FileSearchRequest(BaseModel):
+    query: str
+    file_type: Optional[str] = None
+    location: Optional[str] = None
+    max_results: int = 10
+
+@app.post("/search_files")
+async def search_files(req: FileSearchRequest):
+    """Search for files across the entire laptop using PowerShell."""
+    import subprocess
+    ext_filter = f"*.{req.file_type.lstrip('.')}" if req.file_type else "*"
+    query_clean = (req.query or "").replace('"', '').replace("'", "").strip()
+    max_results = min(req.max_results or 10, 50)
+
+    # Build search root list — 'all' means entire user profile + common locations
+    if not req.location or req.location.lower() in ('all', 'laptop', 'computer', 'everywhere'):
+        ps_roots = """@(
+  $env:USERPROFILE + '\\Desktop',
+  $env:USERPROFILE + '\\Documents',
+  $env:USERPROFILE + '\\Downloads',
+  $env:USERPROFILE + '\\OneDrive',
+  $env:USERPROFILE + '\\Pictures',
+  $env:USERPROFILE + '\\Videos',
+  $env:USERPROFILE + '\\Music',
+  ($env:USERPROFILE -replace '\\\\[^\\\\]+$','')  # parent of user home (all users on drive)
+)"""
+    else:
+        loc = req.location.strip().strip('"\'')
+        loc = loc.replace('Desktop', '$env:USERPROFILE\\Desktop').replace('Documents', '$env:USERPROFILE\\Documents')
+        ps_roots = f"@('{loc}')"
+
+    # If query is empty (list all), just list recent files
+    where_clause = f"Where-Object {{ $_.Name -like '*{query_clean}*' }}" if query_clean else "Where-Object { $true }"
+
+    ps_script = f"""
+$roots = {ps_roots}
+$results = @()
+foreach ($root in $roots) {{
+    if (Test-Path $root) {{
+        $found = Get-ChildItem -Path $root -Recurse -Filter '{ext_filter}' -ErrorAction SilentlyContinue |
+            {where_clause} |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First {max_results}
+        $results += $found
+    }}
+}}
+$results | Sort-Object LastWriteTime -Descending | Select-Object -First {max_results} |
+    Select-Object FullName, Name, LastWriteTime, Length |
+    ConvertTo-Json -Compress
+"""
+    try:
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-Command", ps_script],
+            capture_output=True, text=True, timeout=30
+        )
+        raw = result.stdout.strip()
+        if not raw or raw == "null":
+            return {"files": [], "count": 0, "query": req.query,
+                    "message": f"No files found matching '{query_clean}' on your laptop."}
+        data = json.loads(raw)
+        if isinstance(data, dict):
+            data = [data]
+        files = [{"path": f.get("FullName",""), "name": f.get("Name",""),
+                  "modified": str(f.get("LastWriteTime","")),
+                  "size_bytes": f.get("Length", 0)} for f in data if f.get("FullName")]
+        return {"files": files, "count": len(files), "query": req.query,
+                "success": True,
+                "message": f"Found {len(files)} file(s){' matching ' + repr(query_clean) if query_clean else ''}."}
+
+    except Exception as e:
+        logger.error(traceback.format_exc())
+        raise HTTPException(500, str(e))
+
+
+# ─── FEATURE: CLIPBOARD ───────────────────────────────────────────────────────
+
+class ClipboardRequest(BaseModel):
+    action: str = "read"   # read | summarize | write
+    content: Optional[str] = None
+
+@app.post("/clipboard")
+async def clipboard_action(req: ClipboardRequest):
+    """Read from or write to the system clipboard."""
+    try:
+        try:
+            import pyperclip
+            HAS_PYPERCLIP = True
+        except ImportError:
+            HAS_PYPERCLIP = False
+        
+        if req.action == "write":
+            if not req.content:
+                return {"success": False, "error": "No content provided to write to clipboard"}
+            if HAS_PYPERCLIP:
+                pyperclip.copy(req.content)
+                return {"success": True, "message": "Content copied to clipboard", "action": "write"}
+            else:
+                import subprocess
+                subprocess.run(["powershell.exe", "-Command", f'Set-Clipboard -Value "{req.content.replace(chr(34), chr(39))}"'], check=True)
+                return {"success": True, "message": "Content copied to clipboard", "action": "write"}
+
+        # Read clipboard
+        clipboard_text = ""
+        if HAS_PYPERCLIP:
+            clipboard_text = pyperclip.paste()
+        else:
+            import subprocess
+            result = subprocess.run(["powershell.exe", "-Command", "Get-Clipboard"], capture_output=True, text=True, timeout=5)
+            clipboard_text = result.stdout.strip()
+
+        if not clipboard_text:
+            return {"success": True, "text": "", "message": "Clipboard is empty", "action": req.action}
+
+        if req.action == "summarize":
+            llm = get_llm()
+            summary = _call(llm, f"Summarize this text concisely in 2-3 sentences:\n\n{clipboard_text[:3000]}")
+            return {"success": True, "text": clipboard_text[:500], "summary": summary, "action": "summarize"}
+
+        return {"success": True, "text": clipboard_text, "length": len(clipboard_text), "action": "read"}
+    except Exception as e:
+        logger.error(traceback.format_exc())
+        raise HTTPException(500, str(e))
+
+
+# ─── FEATURE: SYSTEM HEALTH ───────────────────────────────────────────────────
+
+class SystemInfoRequest(BaseModel):
+    metric: str = "all"  # cpu | ram | battery | disk | processes | network | all
+
+@app.post("/system_info")
+async def system_info(req: SystemInfoRequest):
+    """Get real-time system health metrics using psutil."""
+    import psutil
+    try:
+        metric = req.metric.lower()
+        result: Dict[str, Any] = {"metric": metric}
+
+        if metric in ("cpu", "all"):
+            result["cpu_percent"] = psutil.cpu_percent(interval=0.5)
+            result["cpu_cores"] = psutil.cpu_count()
+            result["cpu_freq_mhz"] = round(psutil.cpu_freq().current) if psutil.cpu_freq() else None
+
+        if metric in ("ram", "all"):
+            vm = psutil.virtual_memory()
+            result["ram_total_gb"] = round(vm.total / 1e9, 1)
+            result["ram_used_gb"] = round(vm.used / 1e9, 1)
+            result["ram_free_gb"] = round(vm.available / 1e9, 1)
+            result["ram_percent"] = vm.percent
+
+        if metric in ("battery", "all"):
+            batt = psutil.sensors_battery()
+            if batt:
+                result["battery_percent"] = round(batt.percent, 1)
+                result["battery_charging"] = batt.power_plugged
+                result["battery_secs_left"] = batt.secsleft if batt.secsleft != psutil.POWER_TIME_UNLIMITED else -1
+            else:
+                result["battery_percent"] = None
+                result["battery_note"] = "No battery detected (desktop or always plugged in)"
+
+        if metric in ("disk", "all"):
+            disk = psutil.disk_usage("C:\\")
+            result["disk_total_gb"] = round(disk.total / 1e9, 1)
+            result["disk_used_gb"] = round(disk.used / 1e9, 1)
+            result["disk_free_gb"] = round(disk.free / 1e9, 1)
+            result["disk_percent"] = disk.percent
+
+        if metric in ("processes", "all"):
+            procs = sorted(
+                [{"name": p.info["name"], "cpu": p.info["cpu_percent"], "ram_mb": round(p.info["memory_info"].rss / 1e6, 1) if p.info["memory_info"] else 0}
+                 for p in psutil.process_iter(["name", "cpu_percent", "memory_info"])
+                 if p.info["name"] and p.info.get("memory_info")],
+                key=lambda x: x["ram_mb"], reverse=True
+            )[:10]
+            result["top_processes"] = procs
+
+        if metric in ("network", "all"):
+            net = psutil.net_io_counters()
+            result["net_sent_mb"] = round(net.bytes_sent / 1e6, 1)
+            result["net_recv_mb"] = round(net.bytes_recv / 1e6, 1)
+
+        # Build human-readable summary
+        llm = get_llm()
+        summary = _call(llm, f"Give a one-sentence friendly summary of this system status for the user: {json.dumps(result)}")
+        result["summary"] = summary
+        result["success"] = True
+        return result
+    except Exception as e:
+        logger.error(traceback.format_exc())
+        raise HTTPException(500, str(e))
+
+
+# ─── FEATURE: MEMORY RECALL ───────────────────────────────────────────────────
+
+class MemoryRecallRequest(BaseModel):
+    query: Optional[str] = None
+    action: str = "recall"   # recall | history | repeat
+    days_back: int = 7
+    session_id: Optional[str] = None
+
+@app.post("/recall_memory")
+async def recall_memory(req: MemoryRecallRequest):
+    """Search ChromaDB memory for past tasks and conversations."""
+    try:
+        history_entries = []
+        
+        # Try ChromaDB session messages
+        try:
+            coll = chroma_client.get_or_create_collection("session_messages")
+            cutoff_ts = (datetime.utcnow() - timedelta(days=req.days_back)).isoformat()
+            
+            if req.query:
+                results = coll.query(query_texts=[req.query], n_results=10, include=["documents", "metadatas"])
+                docs = results.get("documents", [[]])[0]
+                metas = results.get("metadatas", [[]])[0]
+                for doc, meta in zip(docs, metas):
+                    ts = meta.get("timestamp", "")
+                    if ts >= cutoff_ts:
+                        history_entries.append({"text": doc, "timestamp": ts, "role": meta.get("role", "user")})
+            else:
+                # Get recent history
+                results = coll.get(include=["documents", "metadatas"])
+                docs = results.get("documents") or []
+                metas = results.get("metadatas") or []
+                for doc, meta in zip(docs, metas):
+                    ts = meta.get("timestamp", "")
+                    if ts >= cutoff_ts:
+                        history_entries.append({"text": doc, "timestamp": ts, "role": meta.get("role", "user")})
+                history_entries.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+                history_entries = history_entries[:20]
+        except Exception as e:
+            logger.warning(f"ChromaDB memory query failed: {e}")
+
+        if not history_entries:
+            return {"success": True, "entries": [], "summary": "No history found for the specified time period.", "query": req.query}
+
+        # Ask LLM to summarize/analyze the history
+        history_text = "\n".join([f"[{e['timestamp'][:16]}] {e['role'].upper()}: {e['text'][:200]}" for e in history_entries[:15]])
+        llm = get_llm()
+        
+        if req.action == "history":
+            summary = _call(llm, f"Summarize what the user has been doing based on this conversation history. Group by topic/task:\n\n{history_text}")
+        elif req.query:
+            summary = _call(llm, f"Based on this history, answer: '{req.query}'\n\nHistory:\n{history_text}\n\nIf you can find the task/info they're asking about, describe it clearly.")
+        else:
+            summary = _call(llm, f"Give a brief summary of recent activity:\n\n{history_text}")
+
+        return {"success": True, "entries": history_entries[:10], "summary": summary, "count": len(history_entries), "query": req.query}
+    except Exception as e:
+        logger.error(traceback.format_exc())
+        raise HTTPException(500, str(e))
+
+
+# ─── FEATURE: PDF OPERATIONS ──────────────────────────────────────────────────
+
+class PDFRequest(BaseModel):
+    operation: str        # read | summarize | convert_from_word
+    filepath: Optional[str] = None
+    content: Optional[str] = None
+    output_path: Optional[str] = None
+    pages: Optional[str] = "all"
+
+@app.post("/pdf_operation")
+async def pdf_operation(req: PDFRequest):
+    """Read PDF text, summarize, or convert Word to PDF."""
+    import os
+    
+    try:
+        if req.operation in ("read", "summarize"):
+            if not req.filepath:
+                raise HTTPException(400, "filepath required for read/summarize operations")
+            fp = os.path.expandvars(os.path.expanduser(req.filepath))
+            if not os.path.exists(fp):
+                return {"success": False, "error": f"File not found: {fp}"}
+
+            try:
+                import pdfplumber
+            except ImportError:
+                return {"success": False, "error": "pdfplumber not installed. Run: pip install pdfplumber"}
+
+            with pdfplumber.open(fp) as pdf:
+                total_pages = len(pdf.pages)
+                # Parse page range
+                if req.pages and req.pages != "all":
+                    parts = req.pages.replace(" ", "").split("-")
+                    start = int(parts[0]) - 1
+                    end = int(parts[1]) if len(parts) > 1 else start + 1
+                    pages_to_read = pdf.pages[start:end]
+                else:
+                    pages_to_read = pdf.pages[:20]  # cap at 20 pages for speed
+
+                extracted = []
+                for i, page in enumerate(pages_to_read):
+                    text = page.extract_text()
+                    if text and text.strip():
+                        extracted.append(f"--- Page {i+1} ---\n{text.strip()}")
+
+            full_text = "\n\n".join(extracted)
+            if not full_text:
+                return {"success": True, "text": "", "message": "No extractable text found (may be a scanned image PDF).", "pages": total_pages}
+
+            if req.operation == "summarize":
+                llm = get_llm()
+                summary = _call(llm, f"Summarize this PDF content clearly and concisely. Include key points, main topics, and any important numbers or conclusions:\n\n{full_text[:4000]}")
+                return {"success": True, "summary": summary, "pages": total_pages, "text_preview": full_text[:500]}
+
+            return {"success": True, "text": full_text[:8000], "pages": total_pages, "total_pages": total_pages}
+
+        elif req.operation == "convert_from_word":
+            if not req.filepath:
+                raise HTTPException(400, "filepath required for Word to PDF conversion")
+            fp = os.path.expandvars(os.path.expanduser(req.filepath))
+            if not os.path.exists(fp):
+                return {"success": False, "error": f"File not found: {fp}"}
+
+            out_path = req.output_path or fp.replace(".docx", ".pdf").replace(".doc", ".pdf")
+            out_path = os.path.expandvars(os.path.expanduser(out_path))
+
+            try:
+                import win32com.client
+                word = win32com.client.Dispatch("Word.Application")
+                word.Visible = False
+                doc = word.Documents.Open(fp)
+                doc.SaveAs(out_path, FileFormat=17)  # 17 = wdFormatPDF
+                doc.Close()
+                word.Quit()
+                return {"success": True, "output_path": out_path, "message": f"Converted to PDF: {out_path}"}
+            except ImportError:
+                return {"success": False, "error": "pywin32 not installed. Run: pip install pywin32"}
+            except Exception as e:
+                return {"success": False, "error": f"Word COM error: {e}"}
+
+        else:
+            raise HTTPException(400, f"Unknown operation: {req.operation}")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(traceback.format_exc())
+        raise HTTPException(500, str(e))
+
+
+# ─── FEATURE: CALENDAR & REMINDERS ───────────────────────────────────────────
+
+class CalendarRequest(BaseModel):
+    operation: str         # set_reminder | get_events | list_reminders | cancel_reminder
+    message: Optional[str] = None
+    time: Optional[str] = None
+    date: Optional[str] = None
+    reminder_name: Optional[str] = None
+
+def _parse_reminder_time(time_str: str, date_str: Optional[str] = None) -> str:
+    """Parse natural language time into a datetime string for Task Scheduler."""
+    from datetime import datetime, timedelta
+    import re
+    now = datetime.now()
+
+    # "in X minutes/hours"
+    m = re.search(r'in\s+(\d+)\s+(minute|min|hour|hr)s?', (time_str or "").lower())
+    if m:
+        n, unit = int(m.group(1)), m.group(2)
+        delta = timedelta(minutes=n) if "min" in unit else timedelta(hours=n)
+        dt = now + delta
+        return dt.strftime("%H:%M")
+
+    # "at 5pm", "at 9:30am"
+    m = re.search(r'(\d{1,2})(?::(\d{2}))?\s*(am|pm)?', (time_str or "").lower())
+    if m:
+        h, mins, ampm = int(m.group(1)), int(m.group(2) or 0), m.group(3) or ""
+        if ampm == "pm" and h < 12: h += 12
+        if ampm == "am" and h == 12: h = 0
+        dt = now.replace(hour=h, minute=mins, second=0)
+        if dt < now:
+            dt += timedelta(days=1)  # schedule for tomorrow if time passed
+        return dt.strftime("%H:%M")
+
+    # Default: 5 minutes from now
+    return (now + timedelta(minutes=5)).strftime("%H:%M")
+
+@app.post("/calendar_operation")
+async def calendar_operation(req: CalendarRequest):
+    """Set Windows Task Scheduler reminders or read Outlook calendar events."""
+    import subprocess, os
+
+    try:
+        if req.operation == "set_reminder":
+            msg = req.message or "Reminder from Pecifics"
+            remind_time = _parse_reminder_time(req.time or "in 5 minutes", req.date)
+            task_name = f"Pecifics_{msg[:30].replace(' ','_')}_{remind_time.replace(':','')}"
+
+            # Toast notification PowerShell script
+            toast_cmd = f'New-BurntToastNotification -Text "Pecifics Reminder", "{msg}" -Snooze -Dismiss'
+            fallback_cmd = f'[System.Reflection.Assembly]::LoadWithPartialName("System.Windows.Forms") | Out-Null; [System.Windows.Forms.MessageBox]::Show("{msg}", "Pecifics Reminder")'
+
+            ps_create_task = f"""
+$action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument '-WindowStyle Hidden -Command "{fallback_cmd}"'
+$trigger = New-ScheduledTaskTrigger -Once -At "{remind_time}"
+$settings = New-ScheduledTaskSettingsSet -DeleteExpiredTaskAfter (New-TimeSpan -Minutes 5)
+Register-ScheduledTask -TaskName "{task_name}" -Action $action -Trigger $trigger -Settings $settings -Force
+Write-Output "REMINDER_SET:{task_name}"
+"""
+            result = subprocess.run(
+                ["powershell.exe", "-NoProfile", "-Command", ps_create_task],
+                capture_output=True, text=True, timeout=15
+            )
+            if "REMINDER_SET" in result.stdout or result.returncode == 0:
+                return {"success": True, "message": f"Reminder set for {remind_time}: '{msg}'", "task_name": task_name, "time": remind_time}
+            return {"success": False, "error": result.stderr or "Failed to create scheduled task"}
+
+        elif req.operation == "list_reminders":
+            ps = 'Get-ScheduledTask | Where-Object { $_.TaskName -like "Pecifics_*" } | Select-Object TaskName, State | ConvertTo-Json -Compress'
+            result = subprocess.run(["powershell.exe", "-NoProfile", "-Command", ps], capture_output=True, text=True, timeout=10)
+            raw = result.stdout.strip()
+            if not raw or raw == "null":
+                return {"success": True, "reminders": [], "message": "No active Pecifics reminders found"}
+            data = json.loads(raw)
+            if isinstance(data, dict): data = [data]
+            return {"success": True, "reminders": data, "count": len(data)}
+
+        elif req.operation == "cancel_reminder":
+            name = req.reminder_name or ""
+            ps = f'Unregister-ScheduledTask -TaskName "{name}" -Confirm:$false; Write-Output "CANCELLED"'
+            result = subprocess.run(["powershell.exe", "-NoProfile", "-Command", ps], capture_output=True, text=True, timeout=10)
+            return {"success": "CANCELLED" in result.stdout, "message": f"Reminder '{name}' cancelled"}
+
+        elif req.operation == "get_events":
+            # Try Outlook COM
+            try:
+                import win32com.client
+                outlook = win32com.client.Dispatch("Outlook.Application")
+                ns = outlook.GetNamespace("MAPI")
+                cal = ns.GetDefaultFolder(9)  # 9 = olFolderCalendar
+                items = cal.Items
+                items.IncludeRecurrences = True
+                
+                from datetime import datetime, timedelta
+                today = datetime.now().strftime("%m/%d/%Y")
+                tomorrow = (datetime.now() + timedelta(days=1)).strftime("%m/%d/%Y")
+                date_filter = req.date or "today"
+                if "tomorrow" in date_filter.lower():
+                    filter_date = tomorrow
+                else:
+                    filter_date = today
+
+                items.Sort("[Start]")
+                events = []
+                for item in items:
+                    try:
+                        start_str = str(item.Start)
+                        if filter_date in start_str or filter_date.split("/")[1] in start_str:
+                            events.append({
+                                "subject": item.Subject,
+                                "start": start_str,
+                                "location": getattr(item, "Location", ""),
+                                "duration_mins": getattr(item, "Duration", 0)
+                            })
+                            if len(events) >= 10: break
+                    except: continue
+                return {"success": True, "events": events, "count": len(events), "date": date_filter}
+            except ImportError:
+                return {"success": False, "error": "pywin32 not installed for Outlook access"}
+            except Exception as e:
+                return {"success": False, "error": f"Outlook not available: {e}. Make sure Outlook is installed and configured."}
+
+        else:
+            raise HTTPException(400, f"Unknown operation: {req.operation}")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(traceback.format_exc())
+        raise HTTPException(500, str(e))
+
 
 # ─── STARTUP ─────────────────────────────────────────────────────────────────
 if __name__ == "__main__":

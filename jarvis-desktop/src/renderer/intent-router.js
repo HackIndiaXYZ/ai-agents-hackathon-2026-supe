@@ -30,7 +30,22 @@
         spotify: 'https://open.spotify.com',
         flipkart: 'https://www.flipkart.com',
         myntra: 'https://www.myntra.com',
+        figma: 'https://www.figma.com',
+        notion: 'https://www.notion.so',
+        canva: 'https://www.canva.com',
+        chatgpt: 'https://chat.openai.com',
+        openai: 'https://chat.openai.com',
+        claude: 'https://claude.ai',
+        gemini: 'https://gemini.google.com',
+        whatsapp: 'https://web.whatsapp.com',
+        trello: 'https://trello.com',
+        slack: 'https://app.slack.com',
+        drive: 'https://drive.google.com',
+        'google drive': 'https://drive.google.com',
+        docs: 'https://docs.google.com',
+        sheets: 'https://sheets.google.com',
     };
+
 
     function resolveUrl(raw) {
         let target = compact(raw).toLowerCase().replace(/\s+/g, '').replace(/\.$/, '');
@@ -139,6 +154,78 @@
             fast_path: true,
             engine: 'browser_recipe',
             protocol_id: 'gamma.create_presentation'
+        };
+    }
+
+    // ── MS Word document creation fast-path ─────────────────────────────────
+    function buildWordDocPlan(raw) {
+        const lower = raw.toLowerCase();
+        if (!/\b(?:word|ms word|microsoft word|\.docx?)\b/.test(lower)) return null;
+        if (!/\b(?:create|make|write|generate|draft|build)\b/.test(lower)) return null;
+
+        let topic = '';
+        const topicPatterns = [
+            /\b(?:create|make|write|generate|draft|build)\s+(?:a\s+)?(?:word\s+)?(?:doc(?:ument)?|report|letter|essay|proposal|summary|article)\s+(?:about|on|for|regarding|titled?)\s+(.+?)(?:\s+in\s+(?:ms\s+)?word)?$/i,
+            /\b(?:create|make|write|generate|draft|build)\s+(?:a\s+)?(?:ms\s+word|microsoft\s+word|word)\s+(?:doc(?:ument)?|report|letter|file)\s+(?:about|on|for|regarding)?\s*(.+)$/i,
+            /\b(?:create|make|write|generate|draft|build)\s+(?:a\s+)?(?:ms\s+word|microsoft\s+word|word)\s+(.+?)(?:\s+doc(?:ument)?)?$/i,
+        ];
+        for (const pat of topicPatterns) {
+            const m = raw.match(pat);
+            if (m && m[1] && m[1].trim().split(/\s+/).length >= 2) {
+                topic = stripQuotes(m[1].replace(/\bin\s+(?:ms\s+)?word\b/i, '').replace(/\.\s*$/, ''));
+                break;
+            }
+        }
+        if (!topic) return null;
+
+        let style = 'professional';
+        if (/\b(?:academic|formal|research|essay|thesis)\b/i.test(raw)) style = 'academic';
+        else if (/\b(?:casual|informal|simple)\b/i.test(raw)) style = 'casual';
+        else if (/\b(?:report|analysis)\b/i.test(raw)) style = 'report';
+
+        return {
+            message: `Creating a Word document about "${topic}".`,
+            tasks: [{ id: 1, description: `Create Word document: ${topic}`,
+                protocol_id: 'msword.create_document', capability: 'create_word_document',
+                engine: 'action', dependsOn: null, depends_on: [], parallel: false,
+                needs_input: false, input_fields: [],
+                actions: [action('create_word_document', { topic, style })]
+            }],
+            expected_result: `Word document created on Desktop about ${topic}`,
+            fast_path: true, engine: 'action', protocol_id: 'msword.create_document'
+        };
+    }
+
+    // ── MS Excel spreadsheet creation fast-path ───────────────────────────────
+    function buildExcelSheetPlan(raw) {
+        const lower = raw.toLowerCase();
+        if (!/\b(?:excel|ms excel|microsoft excel|spreadsheet|xlsx?)\b/.test(lower)) return null;
+        if (!/\b(?:create|make|build|generate|prepare|draft)\b/.test(lower)) return null;
+
+        let topic = '';
+        const topicPatterns = [
+            /\b(?:create|make|build|generate|prepare|draft)\s+(?:a\s+)?(?:excel|ms\s*excel|microsoft\s*excel|spreadsheet)\s+(?:for|about|on|regarding|of)?\s*(.+?)(?:\s+in\s+(?:ms\s+)?excel)?$/i,
+            /\b(?:create|make|build|generate|prepare|draft)\s+(?:a\s+)?(?:ms\s+excel|microsoft\s+excel|excel)\s+(.+?)(?:\s+sheet|\s+file|\s+workbook)?$/i,
+        ];
+        for (const pat of topicPatterns) {
+            const m = raw.match(pat);
+            if (m && m[1] && m[1].trim().split(/\s+/).length >= 2) {
+                topic = stripQuotes(m[1].replace(/\bin\s+(?:ms\s+)?excel\b/i, '').replace(/\.\s*$/, ''));
+                break;
+            }
+        }
+        if (!topic) return null;
+
+        return {
+            message: `Creating an Excel spreadsheet for "${topic}".`,
+            tasks: [{ id: 1, description: `Create Excel spreadsheet: ${topic}`,
+                protocol_id: 'msexcel.create_spreadsheet', capability: 'create_excel_spreadsheet',
+                engine: 'action', dependsOn: null, depends_on: [], parallel: false,
+                needs_input: false, input_fields: [],
+                actions: [action('create_excel_spreadsheet', { topic })]
+            }],
+            expected_result: `Excel spreadsheet created on Desktop for ${topic}`,
+            fast_path: true, engine: 'action', protocol_id: 'msexcel.create_spreadsheet'
         };
     }
 
@@ -608,10 +695,260 @@
         };
     }
 
+
+    // ══ CONVERSATIONAL QUERY DETECTOR ════════════════════════════════════════
+    // Returns true if the input is a conversational question (not a task command)
+    function isConversationalQuery(raw) {
+        const lower = raw.toLowerCase().trim();
+        // Very short conversational phrases
+        if (/^(?:hi|hello|hey|thanks|thank you|ok|okay|sure|yes|no|bye|good(?:bye)?)[\.!?]*$/.test(lower)) return true;
+        // "Where did you..." / "Why did you..." — meta questions about past actions
+        if (/^(?:where|why|when|how)\s+did\s+(?:you|it)\b/.test(lower)) return true;
+        // "What did you..." past tense questions about actions
+        if (/^what\s+did\s+(?:you|it)\b/.test(lower)) return true;
+        // "Can you explain..." / "Tell me about..."
+        if (/^(?:can\s+you\s+(?:explain|tell|describe|help)|tell\s+me\s+(?:about|how|why|what)|explain\s+(?:how|why|what))/.test(lower)) return true;
+        // "What does X mean"
+        if (/what\s+does\s+.+\s+mean/.test(lower)) return true;
+        return false;
+    }
+
+    // ══ FAST-PATH: SCREEN READING ════════════════════════════════════════════
+    function buildReadScreenPlan(raw) {
+        const lower = raw.toLowerCase();
+        if (!/\b(?:what(?:'s|\s+is|\s+are)?\s+(?:there\s+on|on)\s+(?:my\s+)?screen|what(?:'s|\s+is)\s+on\s+(?:my\s+)?screen|read\s+(?:my\s+)?screen|describe\s+(?:my\s+)?screen|what(?:'s|\s+is)\s+(?:this|open|visible)|what\s+does\s+(?:this|the)\s+(?:error|message|page|window)|what\s+am\s+i\s+looking\s+at|what\s+do\s+(?:you\s+)?see|show\s+me\s+(?:what(?:'s|\s+is)\s+on|my\s+screen)|screen\s+content|whats\s+on\s+screen)\b/.test(lower)) return null;
+        const question = raw.trim();
+        return {
+            message: 'Reading your screen…',
+            tasks: [{ id: 1, description: 'Read screen content', protocol_id: 'screen.read_content', capability: 'read_screen',
+                engine: 'action', dependsOn: null, depends_on: [], parallel: false, needs_input: false, input_fields: [],
+                actions: [action('read_screen', { question })]
+            }],
+            expected_result: 'Screen content described', fast_path: true, engine: 'action', protocol_id: 'screen.read_content'
+        };
+    }
+
+    // ══ FAST-PATH: FILE SEARCH & LISTING ═════════════════════════════════════
+    function buildFileSearchPlan(raw) {
+        const lower = raw.toLowerCase();
+        // Don't intercept conversational questions about past searches
+        if (isConversationalQuery(raw)) return null;
+        if (/^(?:where|why|when)\s+did\s+(?:you|it)\s+(?:search|look|find)/.test(lower)) return null;
+
+        const isListAll = /\b(?:list|show|display)\s+(?:all\s+)?(?:my\s+)?(?:files?|documents?|folders?|everything)\b/.test(lower)
+                       || /\blist\s+all\s+(?:the\s+)?files?\b/.test(lower);
+        const isSearch = /\b(?:find|search\s+for|search|look\s+for|where\s+is|where\s+are|open\s+(?:the\s+)?(?:file|doc|pdf|excel|word|latest)|locate)\b/.test(lower);
+
+        if (!isSearch && !isListAll) return null;
+        // For isSearch, require a file-like noun unless it's a direct file name query
+        if (isSearch && !isListAll) {
+            const hasFileNoun = /\b(?:file|doc(?:ument)?|pdf|xlsx?|docx?|ppt|image|photo|folder|resume|report|presentation|txt|png|jpg|mp4|mp3|zip)\b/.test(lower)
+                             || /\b(?:yesterday|last\s+week|recent|latest|newest)\b/.test(lower)
+                             || /\.[a-zA-Z0-9]{2,5}\b/.test(raw); // has extension like .pdf
+            if (!hasFileNoun) return null;
+        }
+
+        let query = isListAll ? '' : raw.replace(/\b(?:find|search\s+for|look\s+for|where\s+is|where\s+are|locate|open\s+the|search\s+for)\b/gi, '').trim();
+        let fileType = null;
+        const typeMatch = lower.match(/\b(pdf|docx?|xlsx?|pptx?|txt|png|jpg|mp4|mp3|zip)\b/);
+        if (typeMatch) fileType = typeMatch[1];
+
+        // Search entire laptop by default (all drives)
+        const searchLocation = 'all';
+
+        if (isListAll) {
+            return {
+                message: 'Listing files on your laptop…',
+                tasks: [{ id: 1, description: 'List all files', protocol_id: 'filesystem.search_and_open', capability: 'list_files',
+                    engine: 'action', dependsOn: null, depends_on: [], parallel: false, needs_input: false, input_fields: [],
+                    actions: [action('find_files', { query: fileType || '', file_type: fileType, location: searchLocation, max_results: 20, open_result: false })]
+                }],
+                expected_result: 'Files listed', fast_path: true, engine: 'action', protocol_id: 'filesystem.search_and_open'
+            };
+        }
+
+        return {
+            message: `Searching your laptop for "${query}"…`,
+            tasks: [{ id: 1, description: `Find: ${query}`, protocol_id: 'filesystem.search_and_open', capability: 'find_files',
+                engine: 'action', dependsOn: null, depends_on: [], parallel: false, needs_input: false, input_fields: [],
+                actions: [action('find_files', { query, file_type: fileType, location: searchLocation, max_results: 10 })]
+            }],
+            expected_result: `File found and opened`, fast_path: true, engine: 'action', protocol_id: 'filesystem.search_and_open'
+        };
+    }
+
+    // ══ FAST-PATH: CLIPBOARD ═════════════════════════════════════════════════
+    function buildClipboardPlan(raw) {
+        const lower = raw.toLowerCase();
+        if (!/\b(?:clipboard|what\s+(?:did\s+i\s+)?copy|what(?:'s|\s+is)\s+(?:on\s+my\s+clipboard|copied|in\s+(?:my\s+)?clipboard)|read\s+(?:my\s+)?clipboard|summarize\s+(?:whatever\s+(?:is|are)\s+(?:there\s+on|on|in)\s+(?:my\s+)?)?clipboard|send\s+clipboard|paste|whats.*clipboard|what.*copied)\b/.test(lower)) return null;
+
+        let clipAction = 'read';
+        if (/\bsummarize\b/.test(lower)) clipAction = 'summarize';
+        else if (/\bsend\b/.test(lower)) clipAction = 'send';
+
+        return {
+            message: `${clipAction === 'read' ? 'Reading' : clipAction === 'summarize' ? 'Summarizing' : 'Sending'} clipboard…`,
+            tasks: [{ id: 1, description: `Clipboard: ${clipAction}`, protocol_id: 'clipboard.read_and_act', capability: 'clipboard_action',
+                engine: 'action', dependsOn: null, depends_on: [], parallel: false, needs_input: false, input_fields: [],
+                actions: [action('clipboard_action', { action: clipAction })]
+            }],
+            expected_result: 'Clipboard action completed', fast_path: true, engine: 'action', protocol_id: 'clipboard.read_and_act'
+        };
+    }
+
+    // ══ FAST-PATH: SYSTEM INFO ════════════════════════════════════════════════
+    function buildSystemInfoPlan(raw) {
+        const lower = raw.toLowerCase();
+        if (!/\b(?:how\s+much\s+(?:ram|memory|cpu|disk|battery|space|storage)|check\s+(?:cpu|ram|memory|battery|disk|system)|what(?:'s|\s+is)\s+(?:my\s+)?(?:battery|ram|cpu|memory|disk|storage)|system\s+(?:status|health|info)|which\s+apps\s+(?:are\s+)?(?:using|running)|top\s+processes|show\s+(?:my\s+)?(?:ram|cpu|memory|battery|disk)|how\s+is\s+my\s+(?:ram|cpu|memory|battery|disk|system))\b/.test(lower)) return null;
+
+        let metric = 'all';
+        if (/\bcpu\b/.test(lower)) metric = 'cpu';
+        else if (/\b(?:ram|memory)\b/.test(lower)) metric = 'ram';
+        else if (/\bbattery\b/.test(lower)) metric = 'battery';
+        else if (/\b(?:disk|storage|space)\b/.test(lower)) metric = 'disk';
+        else if (/\bprocess(?:es)?\b/.test(lower)) metric = 'processes';
+
+        return {
+            message: `Checking ${metric === 'all' ? 'system status' : metric}…`,
+            tasks: [{ id: 1, description: `System info: ${metric}`, protocol_id: 'system.health_check', capability: 'system_info',
+                engine: 'action', dependsOn: null, depends_on: [], parallel: false, needs_input: false, input_fields: [],
+                actions: [action('get_system_info', { metric })]
+            }],
+            expected_result: 'System info retrieved', fast_path: true, engine: 'action', protocol_id: 'system.health_check'
+        };
+    }
+
+    // ══ FAST-PATH: MEMORY RECALL ══════════════════════════════════════════════
+    function buildMemoryRecallPlan(raw) {
+        const lower = raw.toLowerCase();
+        if (!/\b(?:what\s+did\s+i\s+(?:do|ask|say|create|make)|show\s+(?:my\s+)?(?:history|recent|last|previous)|repeat\s+(?:my\s+)?(?:last|previous)\s+task|what\s+(?:tasks|things)\s+(?:did\s+i|have\s+i)|remind\s+me\s+what)\b/.test(lower)) return null;
+
+        let memAction = 'recall';
+        let query = raw;
+        if (/\bhistory\b/.test(lower) || /\brecent\b/.test(lower)) memAction = 'history';
+        if (/\brepeat\b/.test(lower) || /\bredo\b/.test(lower)) memAction = 'repeat';
+
+        let daysBack = 7;
+        if (/\byesterday\b/.test(lower)) { daysBack = 1; query = 'yesterday'; }
+        else if (/\blast\s+week\b/.test(lower)) daysBack = 7;
+        else if (/\btoday\b/.test(lower)) daysBack = 1;
+        else if (/\blast\s+monday|monday\b/.test(lower)) daysBack = 7;
+
+        return {
+            message: `Looking through your history…`,
+            tasks: [{ id: 1, description: `Memory recall: ${memAction}`, protocol_id: 'memory.recall_and_repeat', capability: 'task_recall',
+                engine: 'action', dependsOn: null, depends_on: [], parallel: false, needs_input: false, input_fields: [],
+                actions: [action('recall_memory', { query: raw, action: memAction, days_back: daysBack })]
+            }],
+            expected_result: 'History summarised', fast_path: true, engine: 'action', protocol_id: 'memory.recall_and_repeat'
+        };
+    }
+
+    // ══ FAST-PATH: PDF ════════════════════════════════════════════════════════
+    function buildPDFPlan(raw) {
+        const lower = raw.toLowerCase();
+        if (!/\bpdf\b/.test(lower)) return null;
+        if (!/\b(?:read|open|summarize|summary|what\s+does|extract|convert|turn)\b/.test(lower)) return null;
+
+        let operation = 'read';
+        if (/\bsummar(?:ize|y)\b/.test(lower)) operation = 'summarize';
+        else if (/\b(?:convert|turn|save)\b/.test(lower) && /\b(?:word|doc)\b/.test(lower)) operation = 'convert_from_word';
+
+        // Try to extract a filepath from the command
+        const pathMatch = raw.match(/["']([^"']+\.(?:pdf|docx?))["']|(\b[A-Za-z]:\\[^\s]+\.(?:pdf|docx?))/i);
+        const filepath = pathMatch ? (pathMatch[1] || pathMatch[2]) : null;
+
+        return {
+            message: `${operation === 'summarize' ? 'Summarizing' : operation === 'convert_from_word' ? 'Converting to' : 'Reading'} PDF…`,
+            tasks: [{ id: 1, description: `PDF: ${operation}`, protocol_id: 'pdf.create_and_read', capability: 'pdf_operations',
+                engine: 'action', dependsOn: null, depends_on: [], parallel: false, needs_input: !filepath, input_fields: filepath ? [] : [{ id: 'filepath', label: 'PDF file path', type: 'text' }],
+                actions: filepath ? [action('pdf_operation', { operation, filepath })] : []
+            }],
+            expected_result: 'PDF processed', fast_path: true, engine: 'action', protocol_id: 'pdf.create_and_read'
+        };
+    }
+
+    // ══ FAST-PATH: CALENDAR & REMINDERS ══════════════════════════════════════
+    function buildCalendarPlan(raw) {
+        const lower = raw.toLowerCase();
+        const isReminder = /\b(?:remind\s+me|set\s+(?:a\s+)?reminder|remind\s+at|alert\s+me)\b/.test(lower);
+        const isCalendar = /\b(?:what(?:'s|\s+is)\s+(?:on\s+my\s+)?(?:calendar|schedule)|show\s+(?:my\s+)?(?:events|meetings|schedule|calendar)|upcoming\s+(?:events|meetings))\b/.test(lower);
+        const isList = /\b(?:show|list)\s+(?:my\s+)?reminders?\b/.test(lower);
+        const isCancel = /\b(?:cancel|delete|remove)\s+(?:the\s+)?reminder\b/.test(lower);
+
+        if (!isReminder && !isCalendar && !isList && !isCancel) return null;
+
+        let operation = 'set_reminder';
+        if (isCalendar) operation = 'get_events';
+        else if (isList) operation = 'list_reminders';
+        else if (isCancel) operation = 'cancel_reminder';
+
+        // Extract reminder message (what to remind about)
+        let message = '';
+        let time = '';
+        if (isReminder) {
+            const msgMatch = raw.match(/remind\s+me\s+(?:at\s+[\d:apm]+\s+)?(?:to\s+)?(.+?)(?:\s+at\s+[\d:apm]+)?$/i);
+            if (msgMatch) message = msgMatch[1].replace(/\s+at\s+[\d:]+(?:am|pm)?$/i, '').trim();
+            const timeMatch = raw.match(/(?:at\s+)([\d]{1,2}(?::\d{2})?\s*(?:am|pm)?)|(?:in\s+\d+\s+(?:minutes?|hours?))/i);
+            if (timeMatch) time = timeMatch[0];
+        }
+
+        const dateMatch = raw.match(/\b(?:today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i);
+        const date = dateMatch ? dateMatch[0] : 'today';
+
+        return {
+            message: isReminder ? `Setting reminder: "${message}"…` : isCalendar ? 'Checking your calendar…' : 'Managing reminders…',
+            tasks: [{ id: 1, description: `Calendar: ${operation}`, protocol_id: 'calendar.reminders', capability: 'calendar_and_reminders',
+                engine: 'action', dependsOn: null, depends_on: [], parallel: false, needs_input: false, input_fields: [],
+                actions: [action('calendar_operation', { operation, message, time, date })]
+            }],
+            expected_result: isReminder ? 'Reminder set' : 'Calendar events retrieved', fast_path: true, engine: 'action', protocol_id: 'calendar.reminders'
+        };
+    }
+
+    // ══ FAST-PATH: OPEN APP (locally installed apps not in other plans) ══════
+    function buildOpenAppPlan(raw) {
+        const lower = raw.toLowerCase().trim();
+        // Only match simple "open X" or "launch X" patterns
+        const match = lower.match(/^(?:open|launch|start|run)\s+(.+)$/);
+        if (!match) return null;
+        const appName = match[1].trim();
+        // Don't intercept things that should go to other plans (navigation, browser sites etc)
+        const webOnlyApps = ['figma','notion','canva','chatgpt','claude','gemini','drive','docs','sheets','trello','slack'];
+        if (webOnlyApps.some(a => appName.includes(a))) {
+            // These are web apps — use navigation plan
+            const url = Object.entries(SITE_SHORTCUTS).find(([k]) => appName.includes(k))?.[1];
+            if (url) return {
+                message: `Opening ${appName} in browser…`,
+                tasks: [{ id: 1, description: `Open ${appName}`, protocol_id: 'browser.navigate', capability: 'navigate_and_login',
+                    engine: 'action', dependsOn: null, depends_on: [], parallel: false, needs_input: false, input_fields: [],
+                    actions: [action('navigate_and_login', { url, login: false })]
+                }],
+                expected_result: `${appName} opened in browser`, fast_path: true, engine: 'action', protocol_id: 'browser.navigate'
+            };
+        }
+        return null; // Let the backend handle app launching via vision_task
+    }
+
+    // ══ UPDATED buildPlan — all fast-paths wired in ════════════════════════
     function buildPlan(text) {
         const raw = compact(text);
         if (!raw) return null;
-        return buildGammaPlan(raw)
+
+        // Conversational queries go to backend AI chat, not fast-path execution
+        if (isConversationalQuery(raw)) return null;
+
+        return buildReadScreenPlan(raw)
+            || buildSystemInfoPlan(raw)
+            || buildClipboardPlan(raw)
+            || buildCalendarPlan(raw)
+            || buildMemoryRecallPlan(raw)
+            || buildFileSearchPlan(raw)
+            || buildPDFPlan(raw)
+            || buildWordDocPlan(raw)
+            || buildExcelSheetPlan(raw)
+            || buildOpenAppPlan(raw)
+            || buildGammaPlan(raw)
             || buildChromeRelaunchPlan(raw)
             || buildCredentialPlan(raw)
             || buildForgetCredentialsPlan(raw)
@@ -627,6 +964,15 @@
 
     window.PecificsIntentRouter = {
         buildPlan,
+        buildReadScreenPlan,
+        buildFileSearchPlan,
+        buildClipboardPlan,
+        buildSystemInfoPlan,
+        buildMemoryRecallPlan,
+        buildPDFPlan,
+        buildCalendarPlan,
+        buildWordDocPlan,
+        buildExcelSheetPlan,
         buildGammaPlan,
         buildGoogleSearchPlan,
         buildCredentialPlan,
@@ -638,6 +984,8 @@
         buildVolumePlan,
         buildWhatsAppPlan,
         buildTelegramPlan,
+        buildOpenAppPlan,
+        isConversationalQuery,
         parseWhatsAppMessageCommand,
         parseTelegramMessageCommand,
     };

@@ -553,11 +553,64 @@
         const thinkingEl = addThinking();
         showProgress('Routing command...', 5);
 
+        // ── Groq Input Correction ────────────────────────────────────────────
+        // Silently fix typos before routing. Show correction hint if changed.
+        let processText = text;
+        try {
+            const corrResp = await fetch(`${backendUrl}/correct_input`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text: text.trim() }),
+                signal: AbortSignal.timeout(3000), // Fast timeout — don't slow UX
+            });
+            if (corrResp.ok) {
+                const corrData = await corrResp.json();
+                if (corrData.changed && corrData.corrected && corrData.corrected.trim()) {
+                    processText = corrData.corrected.trim();
+                    console.log(`[correction] "${text}" → "${processText}" (${corrData.method})`);
+                    // Show a subtle correction hint in chat
+                    addMessage(`✏️ _Understood as: "${processText}"_`, 'ai');
+                }
+            }
+        } catch (corrErr) {
+            // Correction is non-critical — proceed with original text
+            console.log('[correction] skipped:', corrErr.message);
+        }
+        // ────────────────────────────────────────────────────────────────────
+
         try {
             const totalStart = perfNow();
             await window.electronAPI.resetStopFlag();
 
-            const localPlan = window.PecificsIntentRouter?.buildPlan?.(text);
+            // ── Conversational fast-path ─────────────────────────────────────
+            // If it's a pure conversation (not a task), skip task planning entirely
+            if (window.PecificsIntentRouter?.isConversationalQuery?.(processText)) {
+                try {
+                    const convResp = await fetch(`${backendUrl}/converse`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            message: processText,
+                            conversation_history: conversationHistory.slice(-10),
+                            session_id: sessionId,
+                        }),
+                    });
+                    if (convResp.ok) {
+                        const convData = await convResp.json();
+                        removeThinking();
+                        const answer = convData.answer || convData.message || 'I understand.';
+                        addMessage(answer, 'ai');
+                        conversationHistory.push({ role: 'assistant', content: answer });
+                        finishProcessingUi();
+                        return;
+                    }
+                } catch (convErr) {
+                    console.warn('[converse] failed, falling through to planner:', convErr.message);
+                }
+            }
+            // ────────────────────────────────────────────────────────────────
+
+            const localPlan = window.PecificsIntentRouter?.buildPlan?.(processText);
             if (localPlan && Array.isArray(localPlan.tasks) && localPlan.tasks.length > 0) {
                 console.log('[intent-router] Local fast plan:', localPlan);
                 removeThinking();
@@ -571,7 +624,7 @@
                     finishProcessingUi();
                     return;
                 }
-                await executeTasks(localPlan.tasks, localPlan.expected_result, text);
+                await executeTasks(localPlan.tasks, localPlan.expected_result, processText);
                 logTiming('sendMessage total (local plan)', totalStart);
                 finishProcessingUi();
                 return;
@@ -586,7 +639,7 @@
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        message: text,
+                        message: processText,
                         conversation_history: conversationHistory.slice(-10),
                         session_id: sessionId,
                         user_home: userHome,
@@ -617,7 +670,7 @@
                             finishProcessingUi();
                             return;
                         }
-                        await executeTasks(protocolTasks, protocolPlan.expected_result, text);
+                        await executeTasks(protocolTasks, protocolPlan.expected_result, processText);
                         logTiming('sendMessage total (protocol plan)', totalStart);
                         finishProcessingUi();
                         return;
@@ -1213,12 +1266,40 @@
                             const userMsg = translateErrorToUserMessage(detail, actionName);
                             addMessage(`Action failed: ${actionName.replace(/_/g, ' ')}\n${userMsg}`, 'ai');
                             console.warn(`[executeTasks] ${actionName} failed:`, result);
-                        } else if (actionName === 'search_files' || actionName === 'search-files') {
+                        } else if (actionName === 'search_files' || actionName === 'search-files' || actionName === 'find_files') {
                             const found = result.files || result.results || [];
                             const lines = Array.isArray(found)
-                                ? found.slice(0, 8).map(file => `- ${file.Name || file.name || 'Item'}\n  ${file.Path || file.path || ''}`)
+                                ? found.slice(0, 8).map(file => {
+                                    const name = file.Name || file.name || 'Item';
+                                    const filePath = file.Path || file.path || file.FullName || '';
+                                    return `📄 ${name}${filePath ? `\n  ${filePath}` : ''}`;
+                                  })
                                 : [];
-                            addMessage(`${result.message || `Found ${lines.length} item(s).`}${lines.length ? `\n${lines.join('\n')}` : ''}`, 'ai');
+                            const openedMsg = result.opened ? `\n✅ Opened: ${result.opened}` : '';
+                            addMessage(`${result.message || `Found ${lines.length} item(s).`}${lines.length ? `\n${lines.join('\n')}` : ''}${openedMsg}`, 'ai');
+                        } else if (actionName === 'read_screen') {
+                            // Show the AI vision answer
+                            const answer = result.answer || result.text || result.message || 'Unable to read screen.';
+                            addMessage(`👁️ **Screen Reading:**\n${answer}`, 'ai');
+                        } else if (actionName === 'clipboard_action') {
+                            const text = result.text || '';
+                            const summary = result.summary || '';
+                            const msg = result.message || '';
+                            if (summary) {
+                                addMessage(`📋 **Clipboard Summary:**\n${summary}`, 'ai');
+                            } else if (text) {
+                                addMessage(`📋 **Clipboard contents:**\n${text.slice(0, 1000)}${text.length > 1000 ? '\n...(truncated)' : ''}`, 'ai');
+                            } else {
+                                addMessage(`📋 ${msg || 'Clipboard is empty.'}`, 'ai');
+                            }
+                        } else if (actionName === 'get_system_info') {
+                            const d = result;
+                            const lines = [];
+                            if (d.cpu_percent !== undefined) lines.push(`🖥️ CPU: ${d.cpu_percent}% (${d.cpu_cores} cores)`);
+                            if (d.ram_used_gb !== undefined) lines.push(`💾 RAM: ${d.ram_used_gb}GB used / ${d.ram_total_gb}GB total (${d.ram_percent}% used)`);
+                            if (d.battery_percent !== undefined) lines.push(`🔋 Battery: ${d.battery_percent}%${d.battery_charging ? ' ⚡ Charging' : ''}`);
+                            if (d.disk_total_gb !== undefined) lines.push(`💿 Disk: ${d.disk_used_gb}GB used / ${d.disk_total_gb}GB total`);
+                            addMessage(lines.length ? lines.join('\n') : result.message || 'System info retrieved.', 'ai');
                         }
 
                         // Small delay between actions
@@ -1336,8 +1417,14 @@
             }
         }
 
-        // Verify if we have expected result
-        if (expectedResult && !shouldStop && taskContext.failed.size === 0) {
+        // Only verify browser/GUI tasks — collect action names from tasks first
+        const _allVerifyActionNames = (tasks || []).flatMap(t => (t.actions || []).map(a => a.action || a.name || ''));
+        const skipVerifyActions = new Set(['find_files', 'search_files', 'open_file', 'get_system_info',
+            'clipboard_action', 'recall_memory', 'pdf_operation', 'calendar_operation',
+            'read_screen', 'create_word_document', 'create_excel_spreadsheet']);
+        const shouldSkipVerify = _allVerifyActionNames.some(n => skipVerifyActions.has(n));
+
+        if (expectedResult && !shouldStop && taskContext.failed.size === 0 && !shouldSkipVerify) {
             await verifyCompletion(originalMessage, expectedResult);
         }
 
