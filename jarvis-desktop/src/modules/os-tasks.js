@@ -1059,7 +1059,7 @@ try {
 
     async getFullSystemHealth() {
         const [battery, disk, network, processes] = await Promise.all([
-            ps(`$b = Get-WmiObject Win32_Battery; if ($b) { [PSCustomObject]@{level=$b.EstimatedChargeRemaining;charging=($b.BatteryStatus-eq 2)} | ConvertTo-Json } else { '{"level":-1}' }`),
+            ps(`$b = Get-CimInstance Win32_Battery; if ($b) { [PSCustomObject]@{level=$b.EstimatedChargeRemaining;charging=($b.BatteryStatus-eq 2)} | ConvertTo-Json } else { '{"level":-1}' }`),
             ps(`Get-PSDrive -PSProvider FileSystem | Where-Object {$_.Used -ne $null} | ForEach-Object { [PSCustomObject]@{drive=$_.Name;free=[math]::Round($_.Free/1GB,1);total=[math]::Round(($_.Free+$_.Used)/1GB,1)} } | ConvertTo-Json -Compress`),
             ps(`$a = Get-NetAdapter | Where-Object {$_.Status -eq "Up"} | Select-Object -First 1; if($a){Write-Output "$($a.Name): $($a.Status)"}else{Write-Output "No active adapter"}`),
             ps(`$p = Get-Process | Measure-Object | Select-Object -Expand Count; Write-Output $p`),

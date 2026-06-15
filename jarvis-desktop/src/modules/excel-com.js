@@ -26,12 +26,20 @@ class ExcelCOM {
 
             let outputBuffer = '';
             const readyMarker = '>>EXCEL_READY<<';
+            const errorMarker = '>>EXCEL_ERROR:';
 
             this.psProcess.stdout.on('data', (data) => {
                 outputBuffer += data.toString();
                 if (outputBuffer.includes(readyMarker)) {
                     this.isReady = true;
                     resolve();
+                } else if (outputBuffer.includes(errorMarker)) {
+                    const parts = outputBuffer.split(errorMarker);
+                    const errorMsg = parts[1] ? parts[1].split('<<')[0] : 'COM Activation Failed';
+                    this.psProcess.kill();
+                    this.psProcess = null;
+                    this.isReady = false;
+                    reject(new Error(errorMsg.trim()));
                 }
             });
 
@@ -39,11 +47,15 @@ class ExcelCOM {
                 console.error('Excel PS Error:', data.toString());
             });
 
-            // Initialize Excel COM object
+            // Initialize Excel COM object with error handling
             this.psProcess.stdin.write(`
-                $global:ExcelApp = New-Object -ComObject Excel.Application
-                $global:ExcelApp.Visible = $true
-                Write-Output '${readyMarker}'
+                try {
+                    $global:ExcelApp = New-Object -ComObject Excel.Application
+                    $global:ExcelApp.Visible = $true
+                    Write-Output '${readyMarker}'
+                } catch {
+                    Write-Output "${errorMarker} $($_.Exception.Message) <<"
+                }
             \n`);
         });
     }
