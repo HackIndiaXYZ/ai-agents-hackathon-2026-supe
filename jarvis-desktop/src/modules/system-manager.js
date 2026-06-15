@@ -305,8 +305,7 @@ try {
             const level = Math.max(0, Math.min(100, brightness));
             const psScript = `
 try {
-    $monitor = Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightnessMethods -ErrorAction Stop
-    $monitor.WmiSetBrightness(1, ${level})
+    Invoke-CimMethod -Namespace root/WMI -ClassName WmiMonitorBrightnessMethods -MethodName WmiSetBrightness -Arguments @{Timeout = 1; Brightness = ${level}} -ErrorAction Stop
     @{success=$true; brightness=${level}; message="Brightness set to ${level}%"} | ConvertTo-Json
 } catch {
     @{success=$false; error="DESKTOP_OR_UNSUPPORTED"; message="Brightness control is only supported on laptops with built-in displays. WMI class not found."} | ConvertTo-Json
@@ -330,7 +329,7 @@ try {
      */
     async getBatteryStatus() {
         return new Promise((resolve) => {
-            const psScript = `$battery = Get-WmiObject Win32_Battery; if ($battery) { @{hasBattery=$true; percentage=$battery.EstimatedChargeRemaining; status=$battery.BatteryStatus; isCharging=($battery.BatteryStatus -eq 2); message="Battery: " + $battery.EstimatedChargeRemaining + "%"} | ConvertTo-Json } else { @{hasBattery=$false; message="No battery detected (desktop computer)"} | ConvertTo-Json }`;
+            const psScript = `$battery = Get-CimInstance Win32_Battery; if ($battery) { @{hasBattery=$true; percentage=$battery.EstimatedChargeRemaining; status=$battery.BatteryStatus; isCharging=($battery.BatteryStatus -eq 2); message="Battery: " + $battery.EstimatedChargeRemaining + "%"} | ConvertTo-Json } else { @{hasBattery=$false; message="No battery detected (desktop computer)"} | ConvertTo-Json }`;
 
             exec(`powershell -Command "${psScript}"`, (error, stdout) => {
                 try {
@@ -370,19 +369,62 @@ try {
      */
     async getSystemInfo() {
         return new Promise((resolve) => {
-            const psScript = `$os = Get-WmiObject Win32_OperatingSystem; $cpu = Get-WmiObject Win32_Processor; $totalRAM = [math]::Round($os.TotalVisibleMemorySize / 1MB, 2); $freeRAM = [math]::Round($os.FreePhysicalMemory / 1MB, 2); @{os=$os.Caption; version=$os.Version; architecture=$os.OSArchitecture; computerName=$env:COMPUTERNAME; cpu=$cpu.Name; totalRAM_GB=$totalRAM; freeRAM_GB=$freeRAM; uptime=[math]::Round((Get-Date) - $os.ConvertToDateTime($os.LastBootUpTime)).TotalHours, 2)} | ConvertTo-Json -Depth 3`;
+            const psScript = `
+                $os = Get-CimInstance Win32_OperatingSystem
+                $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
+                $mem = Get-CimInstance Win32_PhysicalMemory | Measure-Object -Property Capacity -Sum
+                $disk = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'"
+                $battery = Get-CimInstance Win32_Battery | Select-Object -First 1
 
-            exec(`powershell -Command "${psScript}"`, (error, stdout) => {
+                $totalRAM_GB = [math]::Round($mem.Sum / 1GB, 1)
+                if ($totalRAM_GB -eq 0) { $totalRAM_GB = [math]::Round($os.TotalVisibleMemorySize / 1MB, 1) }
+                $freeRAM_GB  = [math]::Round($os.FreePhysicalMemory / 1MB, 1)
+                $usedRAM_GB  = [math]::Round($totalRAM_GB - $freeRAM_GB, 1)
+                $ram_percent = [math]::Round(($usedRAM_GB / $totalRAM_GB) * 100, 1)
+
+                $cpu_cores = [System.Environment]::ProcessorCount
+                $cpu_load = if ($cpu.LoadPercentage -ne $null) { $cpu.LoadPercentage } else { 0 }
+
+                $diskTotal_GB = [math]::Round($disk.Size / 1GB, 1)
+                $diskFree_GB  = [math]::Round($disk.FreeSpace / 1GB, 1)
+                $diskUsed_GB  = [math]::Round($diskTotal_GB - $diskFree_GB, 1)
+
+                $battery_percent = $null
+                $battery_charging = $false
+                if ($battery) {
+                    $battery_percent = $battery.EstimatedChargeRemaining
+                    $battery_charging = ($battery.BatteryStatus -eq 2)
+                }
+
+                [PSCustomObject]@{
+                  cpu_percent = $cpu_load
+                  cpu_cores = $cpu_cores
+                  ram_used_gb = $usedRAM_GB
+                  ram_total_gb = $totalRAM_GB
+                  ram_percent = $ram_percent
+                  battery_percent = $battery_percent
+                  battery_charging = $battery_charging
+                  disk_used_gb = $diskUsed_GB
+                  disk_total_gb = $diskTotal_GB
+                } | ConvertTo-Json -Compress
+            `.replace(/\s+/g, ' ').trim();
+
+            exec(`powershell -NoProfile -Command "${psScript.replace(/"/g, '\\"')}"`, (error, stdout) => {
                 try {
                     const result = JSON.parse(stdout);
                     resolve(result);
                 } catch (e) {
+                    const osType = os.type();
+                    const totalMem = Math.round(os.totalmem() / (1024 * 1024 * 1024) * 10) / 10;
+                    const freeMem = Math.round(os.freemem() / (1024 * 1024 * 1024) * 10) / 10;
                     resolve({
-                        os: os.type(),
-                        version: os.release(),
-                        architecture: os.arch(),
-                        computerName: os.hostname(),
-                        totalRAM_GB: Math.round(os.totalmem() / 1024 / 1024 / 1024 * 100) / 100
+                        cpu_percent: 0,
+                        cpu_cores: os.cpus().length,
+                        ram_used_gb: Math.round((totalMem - freeMem) * 10) / 10,
+                        ram_total_gb: totalMem,
+                        ram_percent: Math.round(((totalMem - freeMem) / totalMem) * 100),
+                        disk_used_gb: 0,
+                        disk_total_gb: 0
                     });
                 }
             });

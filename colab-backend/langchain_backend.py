@@ -430,6 +430,43 @@ def protocol_summaries() -> List[Dict[str, Any]]:
         })
     return summaries
 
+def protocol_summaries_relevant(message: str) -> List[Dict[str, Any]]:
+    protocols = load_protocols()
+    selected_pids = set()
+    
+    # 1. Add core fallback / default protocols
+    core_pids = {
+        "browser.navigate", 
+        "google_search.search", 
+        "screen.read_content", 
+        "filesystem.search_and_open", 
+        "system.health_check"
+    }
+    for pid in core_pids:
+        if pid in protocols:
+            selected_pids.add(pid)
+            
+    # 2. Suggest closest protocols based on user message keywords
+    suggested = suggest_closest_protocols(message, limit=5)
+    for pid in suggested:
+        if pid in protocols:
+            selected_pids.add(pid)
+            
+    summaries = []
+    for pid in sorted(selected_pids):
+        protocol = protocols[pid]
+        summaries.append({
+            "id": protocol.get("id"),
+            "domain": protocol.get("domain"),
+            "capability": protocol.get("capability"),
+            "description": protocol.get("description"),
+            "risk": protocol.get("risk", "low"),
+            "requires_confirmation": bool(protocol.get("requires_confirmation", False)),
+            "parameters": protocol.get("parameters", {}),
+            "fallbacks": protocol.get("fallbacks", []),
+        })
+    return summaries
+
 def _render_template_value(value: Any, params: Dict[str, Any]) -> Any:
     if isinstance(value, str):
         full = re.fullmatch(r"\{\{\s*([a-zA-Z0-9_]+)\s*\}\}", value)
@@ -632,6 +669,17 @@ SITE_SHORTCUTS = {
     "spotify": "https://open.spotify.com",
     "flipkart": "https://www.flipkart.com",
     "myntra": "https://www.myntra.com",
+    "figma": "https://www.figma.com",
+    "canva": "https://www.canva.com",
+    "notion": "https://www.notion.so",
+    "chatgpt": "https://chat.openai.com",
+    "openai": "https://chat.openai.com",
+    "claude": "https://claude.ai",
+    "gemini": "https://gemini.google.com",
+    "drive": "https://drive.google.com",
+    "google drive": "https://drive.google.com",
+    "slack": "https://slack.com",
+    "trello": "https://trello.com",
 }
 
 def resolve_url(raw: str) -> str:
@@ -1629,10 +1677,34 @@ def _missing_required_protocol_params(protocol_id: str, params: Dict[str, Any]) 
             missing.append(key)
     return missing
 
-def build_protocol_list_for_prompt() -> str:
+def build_protocol_list_for_prompt(message: Optional[str] = None) -> str:
     lines = []
-    for protocol in load_protocols().values():
-        pid = protocol.get("id")
+    protocols = load_protocols()
+    
+    selected_pids = set()
+    if message:
+        # 1. Add core fallback / default protocols
+        core_pids = {
+            "browser.navigate", 
+            "google_search.search", 
+            "screen.read_content", 
+            "filesystem.search_and_open", 
+            "system.health_check"
+        }
+        for pid in core_pids:
+            if pid in protocols:
+                selected_pids.add(pid)
+                
+        # 2. Suggest closest protocols based on user message keywords
+        suggested = suggest_closest_protocols(message, limit=5)
+        for pid in suggested:
+            if pid in protocols:
+                selected_pids.add(pid)
+    else:
+        selected_pids = set(protocols.keys())
+        
+    for pid in sorted(selected_pids):
+        protocol = protocols[pid]
         domain = protocol.get("domain") or ""
         capability = protocol.get("capability") or ""
         desc = protocol.get("description") or ""
@@ -1913,6 +1985,23 @@ def _choice_to_protocol_plan(choice: Dict[str, Any], message: str, session_id: s
     protocol_id = choice.get("protocol_id")
     confidence = float(choice.get("confidence") or 0)
     strategy = str(choice.get("strategy") or "").strip().lower()
+    if strategy == "chat":
+        reply = choice.get("reply") or choice.get("message") or "Hi! What can I do for you?"
+        return {
+            "goal": message,
+            "message": reply,
+            "strategy": "chat",
+            "protocol_id": None,
+            "capability": None,
+            "parameters": {},
+            "tasks": [],
+            "fallbacks": [],
+            "requires_confirmation": False,
+            "expected_result": "",
+            "session_id": session_id,
+            "planner_confidence": confidence,
+            "planner_reason": choice.get("reason", ""),
+        }
     if strategy == "ask_user":
         question = choice.get("clarification_needed") or choice.get("message") or "I need one more detail before I can run this."
         return {
@@ -2011,7 +2100,7 @@ async def _call_ollama_primary_intent(
 Your job is to understand what the user wants and map it to the correct protocol and parameters.
 
 Available protocols:
-{build_protocol_list_for_prompt()}
+{build_protocol_list_for_prompt(message)}
 
 User profile context:
 {summarize_user_profile(user_profile)}
@@ -2040,7 +2129,9 @@ Rules:
 12. If a navigation command also says login/sign in/using my account, set login true and login_method to google_oauth, saved_credentials, or site_default.
 13. Follow-up commands like "also login using my Google account" are continuations. Use the recent conversation URL/app when available.
 14. For Google Forms, choose google_forms.fill. If field values are not explicitly provided, set auto_answer true, user_context to the command, and submit true only when the user explicitly says submit/send/turn it in.
-15. The strategy value must be exactly one of: "protocol", "ask_user", "vision". Do not copy the enum string.
+15. Use strategy "chat" and return a friendly response in the "reply" parameter only for small talk, greetings, general questions about Pecifics itself, or when no physical action is requested on the computer. If the query mixes a greeting with a task ("hello, open figma"), treat it as a task and choose "protocol".
+16. If "browser_state" has "automationAvailable": false, and the user asks to perform an automated action (like login, typing, or clicking) on that page, set strategy to "ask_user" and set "clarification_needed" to "That page opened outside Pecifics — want me to reopen it in the Pecifics Chrome window so I can automate it for you?"
+17. The strategy value must be exactly one of: "protocol", "ask_user", "vision", "chat". Do not copy the enum string.
 
 Examples:
 User: shoot a message to zainab saying hi
@@ -2060,7 +2151,7 @@ JSON: {{"strategy":"protocol","protocol_id":"google_forms.fill","confidence":0.8
 
 Return ONLY valid JSON, no markdown:
 {{
-  "strategy": "protocol|ask_user|vision",
+  "strategy": "protocol|ask_user|vision|chat",
   "protocol_id": "one available protocol id or null",
   "confidence": 0.0,
   "parameters": {{}},
@@ -2662,8 +2753,8 @@ KEY RULES:
 2. Start goals with "Open Chrome." if browser isn't open
 3. Gmail user is already logged in — skip login steps
 4. For PPT (any "create presentation/slides/ppt"): use generate_ppt action → it AUTO-OPENS in PowerPoint
-5. For Word docs ("create document/report/letter"): use word_create_document → AUTO-OPENS in Word
-6. For Excel ("create spreadsheet/workbook/table"): use excel_create_workbook → AUTO-OPENS in Excel
+5. For Word docs ("create document/report/letter"): use create_word_document → AUTO-OPENS in Word
+6. For Excel ("create spreadsheet/workbook/table"): use create_excel_spreadsheet → AUTO-OPENS in Excel
 7. For file ops: use create_file, read_file etc. (not vision_task)
 8. NEVER use generate_ppt + vision_task for same PPT — generate_ppt does everything
 9. ALWAYS return tasks array even for single tasks
@@ -2695,6 +2786,29 @@ def _call(llm, prompt: str) -> str:
     except Exception as e:
         logger.error(f"LLM call failed: {e}")
         raise
+
+async def call_qwen(system_prompt: str, user_message: str, max_tokens: int = 1500) -> Optional[str]:
+    try:
+        async with httpx.AsyncClient(timeout=45.0) as client:
+            resp = await client.post(
+                f"{OLLAMA_URL.rstrip('/')}/api/chat",
+                json={
+                    "model": OLLAMA_MODEL,
+                    "stream": False,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_message},
+                    ],
+                    "keep_alive": "30m",
+                    "options": {"temperature": 0.2, "num_predict": max_tokens},
+                },
+            )
+        if resp.status_code == 200:
+            data = resp.json()
+            return (data.get("message") or {}).get("content") or data.get("response") or ""
+    except Exception as e:
+        logger.warning(f"Qwen/Ollama call failed: {e}")
+    return None
 
 # ─── VISION PROVIDER ─────────────────────────────────────────────────────────
 
@@ -3328,6 +3442,27 @@ async def store_result_data_endpoint(req: ResultDataPayload):
     )
     return {"stored": True, "session_id": session_id}
 
+def is_os_domain(command: str) -> bool:
+    cmd = command.lower().strip()
+    
+    # Check for app-specific keywords
+    app_keywords = ["google", "youtube", "spotify", "whatsapp", "telegram", "gmail", "email", "mail", "chrome", "facebook", "twitter", "instagram"]
+    has_app_keyword = any(app in cmd for app in app_keywords)
+    
+    # Check for OS indicators
+    os_indicators = ["folder", "file", "document", "word doc", "excel", "spreadsheet", "powerpoint", "presentation", ".docx", ".xlsx", ".pptx", ".pdf", ".txt", "desktop", "documents", "downloads", "pictures", "videos", "music", "find my", "search for"]
+    has_os_indicator = any(indicator in cmd for indicator in os_indicators)
+    
+    # If it has an app keyword but does NOT have an OS indicator, bypass OS routing
+    if has_app_keyword and not has_os_indicator:
+        return False
+        
+    OS_DOMAIN_SIGNALS = re.compile(
+        r"\b(open|find|search|locate|show me|create|make|new|delete|remove|rename|move|copy|folder|file|document|word doc|excel|spreadsheet|powerpoint|presentation|\.docx|\.xlsx|\.pptx|\.pdf|\.txt|on (my )?desktop|in documents|in downloads)\b",
+        re.IGNORECASE
+    )
+    return bool(OS_DOMAIN_SIGNALS.search(cmd))
+
 @app.post("/plan_protocol")
 async def plan_protocol_endpoint(req: ProtocolPlanRequest):
     """Protocol-aware planner.
@@ -3338,6 +3473,16 @@ async def plan_protocol_endpoint(req: ProtocolPlanRequest):
     """
     session_id = req.session_id or str(uuid.uuid4())
     user_home = req.user_home or _USER_HOME.replace("\\\\", "\\")
+    
+    # Load recent browser navigation context if not provided
+    if not req.browser_state and session_id:
+        for entry in load_recent_result_context(session_id, limit=3):
+            data = entry.get("data") or {}
+            if data.get("type") == "browser_navigation":
+                req.browser_state = data
+                logger.info(f"[PLANNER] Enriched browser_state from result context: {data}")
+                break
+
     original_message = req.message
     logger.info("[PLANNER] Incoming session=%s command=%r", session_id, original_message)
     context_enriched = _enrich_with_active_context(original_message, req.app_state)
@@ -3354,6 +3499,19 @@ async def plan_protocol_endpoint(req: ProtocolPlanRequest):
             correlation.get("reason", ""),
         )
     save_session_message(session_id, "user", original_message)
+
+    # ─── OS Operations Domain Department Routing ──────────────────────────────
+    if is_os_domain(req.message):
+        logger.info("[PLANNER] Routing to OS department: %r", req.message)
+        import os_operations
+        parsed = await os_operations.parse_os_command(req.message)
+        if parsed:
+            plan = await os_operations.execute(parsed, req.message, session_id, user_home)
+            plan["session_id"] = session_id
+            plan["available_protocol_count"] = len(load_protocols())
+            plan["planner_model"] = f"os-department/{OLLAMA_MODEL}"
+            save_session_message(session_id, "assistant", plan.get("message", ""))
+            return JSONResponse(content=plan)
 
     result_continuation = _continuation_result_plan(original_message, session_id)
     if result_continuation:
@@ -3471,7 +3629,7 @@ async def plan_protocol_endpoint(req: ProtocolPlanRequest):
     # deterministic parsers. Ollama is tried first; Groq is the cloud fallback.
     prompt = f"""You are Pecifics' protocol planner.
 Available protocols:
-{json.dumps(protocol_summaries(), indent=2)}
+{json.dumps(protocol_summaries_relevant(req.message), indent=2)}
 
 User command: {req.message}
 User profile: {json.dumps(req.user_profile or load_user_profile())[:3000]}
@@ -4019,7 +4177,7 @@ Available tools:
 {json.dumps(REACT_TOOLS, indent=2)}
 
 Known protocols:
-{build_protocol_list_for_prompt()}
+{build_protocol_list_for_prompt(goal)}
 
 Goal:
 {goal}
@@ -4174,12 +4332,8 @@ class ConverseRequest(BaseModel):
 @app.post("/converse")
 async def converse(req: ConverseRequest):
     """Pure conversational response — no task execution, no recipe memory lookup.
-    Used for follow-up questions, greetings, meta-questions about past actions, etc."""
-    try:
-        llm = get_llm()
-    except Exception as e:
-        raise HTTPException(503, f"LLM unavailable: {e}")
-
+    Used for follow-up questions, greetings, meta-questions about past actions, etc.
+    Runs entirely locally using Qwen."""
     session_id = req.session_id or str(uuid.uuid4())
     history = load_session_messages(session_id, limit=10) + (req.conversation_history or [])
 
@@ -4190,19 +4344,22 @@ async def converse(req: ConverseRequest):
         content = str(msg.get("content", ""))[:300]
         history_text += f"{role}: {content}\n"
 
-    prompt = f"""You are Pecifics, a friendly and helpful Windows desktop AI assistant.
+    system_prompt = """You are Pecifics, a friendly and helpful Windows desktop AI assistant.
 The user is having a conversation with you. Answer their question naturally and helpfully.
 You have memory of recent actions — if they ask about something you did (like "where did you search?"), 
-refer to the conversation history to answer accurately.
+refer to the conversation history to answer accurately."""
 
-Recent conversation:
+    user_msg = f"""Recent conversation:
 {history_text or "No prior history."}
 
 User: {req.message}
 Assistant:"""
 
     try:
-        answer = _call(llm, prompt).strip()
+        answer = await call_qwen(system_prompt, user_msg, max_tokens=350)
+        if not answer:
+            answer = "I am here — what would you like me to do?"
+        answer = answer.strip()
         save_session_message(session_id, "user", req.message)
         save_session_message(session_id, "assistant", answer)
         return {"answer": answer, "session_id": session_id, "success": True}
@@ -4596,14 +4753,16 @@ class SheetGenerationRequest(BaseModel):
 async def generate_word_document(req: DocGenerationRequest):
     """Generate a structured Word document spec using LLM, ready for word-com.js to render."""
     try:
-        llm = get_llm()
         prompt = WORD_DOC_PROMPT.format(
             topic=req.topic,
             instructions=req.instructions or "Make it comprehensive and well-structured.",
             style=req.style or "professional"
         )
-        raw: str = ""
-        raw = _call(llm, prompt).strip()
+        system_prompt = "You are a document structure planner. Return ONLY a valid JSON block containing the structure."
+        raw = await call_qwen(system_prompt, prompt, max_tokens=1500)
+        if not raw:
+            raise Exception("No response from local Qwen")
+        raw = raw.strip()
         raw = re.sub(r"^```(?:json)?\s*", "", raw)
         raw = re.sub(r"\s*```$", "", raw)
         structure = json.loads(raw)
@@ -4690,13 +4849,15 @@ async def create_docx_file(req: DocxFileRequest):
 async def generate_excel_spreadsheet(req: SheetGenerationRequest):
     """Generate a structured Excel spreadsheet spec using LLM, ready for excel-com.js to render."""
     try:
-        llm = get_llm()
         prompt = EXCEL_SHEET_PROMPT.format(
             topic=req.topic,
             instructions=req.instructions or "Make it practical and well-organised with realistic sample data.",
         )
-        raw: str = ""
-        raw = _call(llm, prompt).strip()
+        system_prompt = "You are a spreadsheet structure planner. Return ONLY a valid JSON block containing the structure."
+        raw = await call_qwen(system_prompt, prompt, max_tokens=1500)
+        if not raw:
+            raise Exception("No response from local Qwen")
+        raw = raw.strip()
         raw = re.sub(r"^```(?:json)?\s*", "", raw)
         raw = re.sub(r"\s*```$", "", raw)
         structure = json.loads(raw)
@@ -4714,7 +4875,7 @@ async def generate_excel_spreadsheet(req: SheetGenerationRequest):
         raise HTTPException(500, str(e))
 
 
-# ─── FEATURE: INPUT CORRECTION (Groq-powered typo & intent fix) ───────────────
+# ─── FEATURE: INPUT CORRECTION (Local Qwen-powered typo & intent fix) ───────────────
 
 class CorrectInputRequest(BaseModel):
     text: str
@@ -4722,14 +4883,14 @@ class CorrectInputRequest(BaseModel):
 
 @app.post("/correct_input")
 async def correct_input(req: CorrectInputRequest):
-    """Use Groq to fix typos and clarify user commands before intent routing."""
+    """Use local Qwen to fix typos and clarify user commands before intent routing."""
     if not req.text or len(req.text.strip()) < 2:
         return {"corrected": req.text, "changed": False}
     
     # Apply fast regex corrections first (no LLM cost)
     fast_corrected = _correct_typos(req.text.strip())
     
-    # Only call Groq if it's likely to help (long enough, has potential issues)
+    # Only call Qwen if it's likely to help (long enough, has potential issues)
     text = req.text.strip()
     word_count = len(text.split())
     
@@ -4738,8 +4899,7 @@ async def correct_input(req: CorrectInputRequest):
         return {"corrected": fast_corrected, "changed": fast_corrected != text, "method": "regex"}
     
     try:
-        llm = get_llm()
-        prompt = f"""You are a command pre-processor for a Windows desktop AI assistant called Pecifics.
+        system_prompt = """You are a command pre-processor for a Windows desktop AI assistant called Pecifics.
 Your job: Fix typos, spelling mistakes, and grammar in the user's command. Do NOT change the meaning or add new intent.
 Keep it natural and concise. If the command is already correct, return it as-is.
 
@@ -4747,22 +4907,22 @@ Rules:
 - Fix obvious typos: "inux" → "Linux", "crate" → "create", "opn" → "open"
 - Fix spacing issues, capitalisation where needed
 - Do NOT rewrite commands, just fix errors
-- Return ONLY the corrected command text, nothing else, no quotes, no explanation
-
-User command: {text}
-Corrected command:"""
-        corrected = _call(llm, prompt).strip().strip('"\'')
-        # Sanity check - if Groq returned something wildly different, use regex version
+- Return ONLY the corrected command text, nothing else, no quotes, no explanation"""
+        corrected = await call_qwen(system_prompt, f"User command: {text}\nCorrected command:", max_tokens=100)
+        if not corrected:
+            raise Exception("No response from local Qwen")
+        corrected = corrected.strip().strip('"\'')
+        # Sanity check - if Qwen returned something wildly different, use regex version
         if len(corrected) < 2 or len(corrected) > len(text) * 3:
             corrected = fast_corrected
         return {
             "corrected": corrected,
             "original": text,
             "changed": corrected.lower() != text.lower(),
-            "method": "groq"
+            "method": "qwen"
         }
     except Exception as e:
-        logger.warning(f"correct_input Groq failed: {e}")
+        logger.warning(f"correct_input Qwen failed: {e}")
         return {"corrected": fast_corrected, "changed": fast_corrected != text, "method": "regex_fallback"}
 
 
@@ -4771,22 +4931,16 @@ Corrected command:"""
 class ReadScreenRequest(BaseModel):
     screenshot: Optional[str] = None   # base64 jpeg
     question: Optional[str] = None
+    ocr_text: Optional[str] = None
 
 @app.post("/read_screen")
 async def read_screen(req: ReadScreenRequest):
-    """Answer a question about the current screen using AI vision."""
+    """Answer a question about the current screen using AI vision or local OCR."""
     question = req.question or "Describe everything you see on this screen in detail."
-    if not req.screenshot:
-        # No screenshot — give a helpful text answer via Groq
+    
+    # Priority 1: Gemini Vision (visual analysis)
+    if req.screenshot and HAS_GEMINI and GEMINI_API_KEY:
         try:
-            llm = get_llm()
-            answer = _call(llm, f"""The user is using a Windows desktop assistant and asked: "{question}"
-They have not provided a screenshot. Politely explain that to read the screen, you need the GEMINI_API_KEY environment variable set with a Gemini API key (free at https://makersuite.google.com/), OR describe what kind of information you'd normally provide for this question.""")
-            return {"answer": answer, "success": False, "provider": "groq_text", "note": "No screenshot available. Set GEMINI_API_KEY for vision."}
-        except Exception:
-            return {"answer": "No screenshot provided. Please set GEMINI_API_KEY to enable screen reading.", "success": False}
-    try:
-        if HAS_GEMINI and GEMINI_API_KEY:
             genai.configure(api_key=GEMINI_API_KEY)
             model = genai.GenerativeModel(GEMINI_MODEL)
             img_data = base64.b64decode(req.screenshot)
@@ -4795,13 +4949,35 @@ They have not provided a screenshot. Politely explain that to read the screen, y
                 {"mime_type": "image/jpeg", "data": img_data}
             ], generation_config={"temperature": 0.1, "max_output_tokens": 1024})
             return {"answer": resp.text.strip(), "success": True, "provider": "gemini"}
-        # Fallback: Groq text only (describe what question is about)
+        except Exception as gemini_err:
+            logger.warning(f"Gemini Vision call failed, trying local OCR fallback: {gemini_err}")
+
+    # Priority 2: Local OCR + Qwen text query (fully offline fallback)
+    if req.ocr_text:
+        try:
+            logger.info("[read_screen] Processing via local OCR + Qwen...")
+            system_prompt = f"""You are Pecifics, an AI desktop assistant. The user is asking a question about what is on their screen.
+Below is the raw text extracted from the user's screen using local OCR:
+\"\"\"
+{req.ocr_text}
+\"\"\"
+
+Answer the user's question accurately, directly, and concisely using the screen text above. If the text does not contain the answer, politely explain that you couldn't find it in the screen text."""
+            answer = await call_qwen(system_prompt, f"User Question: {question}")
+            if answer:
+                return {"answer": answer.strip(), "success": True, "provider": "qwen_ocr"}
+        except Exception as qwen_err:
+            logger.warning(f"Qwen OCR reasoning failed: {qwen_err}")
+
+    # Priority 3: Fallback chitchat response
+    try:
         llm = get_llm()
-        answer = _call(llm, f"The user asked: '{question}' while looking at their screen. Explain that you need vision capability (GEMINI_API_KEY) to see the screen, and suggest they describe what they see.")
-        return {"answer": answer, "success": False, "provider": "text_only"}
-    except Exception as e:
-        logger.error(traceback.format_exc())
-        raise HTTPException(500, str(e))
+        answer = _call(llm, f"""The user asked: "{question}" while looking at their screen.
+No screenshot or OCR text was available, or vision engines failed.
+Politely explain that to see the screen they should set the GEMINI_API_KEY environment variable (free at https://aistudio.google.com/), or suggest they describe what they see.""")
+        return {"answer": answer, "success": False, "provider": "text_only", "note": "Vision unavailable. Set GEMINI_API_KEY."}
+    except Exception:
+        return {"answer": "No screenshot or OCR text available. Please set GEMINI_API_KEY to enable screen reading.", "success": False}
 
 
 # ─── FEATURE: FILE SEARCH ─────────────────────────────────────────────────────
@@ -4816,50 +4992,111 @@ class FileSearchRequest(BaseModel):
 async def search_files(req: FileSearchRequest):
     """Search for files across the entire laptop using PowerShell."""
     import subprocess
-    ext_filter = f"*.{req.file_type.lstrip('.')}" if req.file_type else "*"
-    query_clean = (req.query or "").replace('"', '').replace("'", "").strip()
+    file_type_clean = re.sub(r'[^a-zA-Z0-9]', '', req.file_type.lstrip('.')) if req.file_type else None
+    ext_filter = f"*.{file_type_clean}" if file_type_clean else "*"
+    query_raw = (req.query or "").replace('"', '').replace("'", "").strip()
+    # Remove leading search verbs
+    query_clean = re.sub(
+        r"^(?:search\s+everywhere\s+for|search\s+for|find\s+my|find|look\s+for|locate|search\s+everywhere|search)\s+",
+        "", query_raw, flags=re.I
+    )
+    # Remove trailing nouns like folder, file, directory
+    query_clean = re.sub(
+        r"\s+(?:folders?|directories|directory|files?)$",
+        "", query_clean.strip(), flags=re.I
+    ).strip()
     max_results = min(req.max_results or 10, 50)
 
-    # Build search root list — 'all' means entire user profile + common locations
-    if not req.location or req.location.lower() in ('all', 'laptop', 'computer', 'everywhere'):
-        ps_roots = """@(
-  $env:USERPROFILE + '\\Desktop',
-  $env:USERPROFILE + '\\Documents',
-  $env:USERPROFILE + '\\Downloads',
-  $env:USERPROFILE + '\\OneDrive',
-  $env:USERPROFILE + '\\Pictures',
-  $env:USERPROFILE + '\\Videos',
-  $env:USERPROFILE + '\\Music',
-  ($env:USERPROFILE -replace '\\\\[^\\\\]+$','')  # parent of user home (all users on drive)
-)"""
-    else:
+    # Detect if user explicitly requested a deep search across the whole drive
+    deep = False
+    if req.location and req.location.lower() in ('laptop', 'computer', 'everywhere'):
+        deep = True
+    elif any(phrase in query_clean.lower() for phrase in ("whole computer", "entire laptop", "everywhere", "whole drive", "full laptop", "entire computer")):
+        deep = True
+
+    SEARCH_EXCLUDE_DIRS = [
+        r"\.venv", r"\\venv\\", r"node_modules", r"__pycache__", r"\.git",
+        r"AppData", r"\$RECYCLE\.BIN", r"\\Windows\\", r"Program Files",
+        r"ProgramData", r"\.cache"
+    ]
+    exclude_pattern = "|".join(SEARCH_EXCLUDE_DIRS).replace('\\', '\\\\')
+
+    if req.location and req.location.lower() not in ('all', 'laptop', 'computer', 'everywhere'):
         loc = req.location.strip().strip('"\'')
         loc = loc.replace('Desktop', '$env:USERPROFILE\\Desktop').replace('Documents', '$env:USERPROFILE\\Documents')
-        ps_roots = f"@('{loc}')"
+        ps_roots_init = f"$roots = @('{loc}')"
+    else:
+        if deep:
+            ps_roots_init = "$roots = @($env:SystemDrive + '\\')"
+        else:
+            ps_roots_init = """
+            $roots = @()
+            $baseRoots = @(
+              "$env:USERPROFILE\\Desktop",
+              "$env:USERPROFILE\\Documents",
+              "$env:USERPROFILE\\Downloads",
+              "$env:USERPROFILE\\Pictures",
+              "$env:USERPROFILE\\Videos",
+              "$env:USERPROFILE\\Music"
+            )
+            foreach ($br in $baseRoots) {
+                if (Test-Path $br) { $roots += $br }
+                $od = $br.Replace($env:USERPROFILE, $env:USERPROFILE + '\\OneDrive')
+                if (Test-Path $od) { $roots += $od }
+            }
+            """
 
     # If query is empty (list all), just list recent files
     where_clause = f"Where-Object {{ $_.Name -like '*{query_clean}*' }}" if query_clean else "Where-Object { $true }"
 
     ps_script = f"""
-$roots = {ps_roots}
+{ps_roots_init}
+$exclude = '{exclude_pattern}'
 $results = @()
 foreach ($root in $roots) {{
     if (Test-Path $root) {{
-        $found = Get-ChildItem -Path $root -Recurse -Filter '{ext_filter}' -ErrorAction SilentlyContinue |
-            {where_clause} |
-            Sort-Object LastWriteTime -Descending |
-            Select-Object -First {max_results}
-        $results += $found
+        $queue = [System.Collections.Generic.Queue[string]]::new()
+        $queue.Enqueue($root)
+        while ($queue.Count -gt 0 -and $results.Count -lt {max_results}) {{
+            $current = $queue.Dequeue()
+            try {{
+                $items = Get-ChildItem -Path $current -ErrorAction SilentlyContinue -Force
+                foreach ($item in $items) {{
+                    if ($item.PSIsContainer) {{
+                        if ($item.FullName -notmatch $exclude) {{
+                            $queue.Enqueue($item.FullName)
+                            if ("{ext_filter}" -eq "*" -and ($null -eq "{query_clean}" -or "{query_clean}" -eq "" -or $item.Name -like "*{query_clean}*")) {{
+                                $results += $item
+                                if ($results.Count -ge {max_results}) {{ break }}
+                            }}
+                        }}
+                    }} else {{
+                        if ($item.Name -like "{ext_filter}" -and ($null -eq "{query_clean}" -or "{query_clean}" -eq "" -or $item.Name -like "*{query_clean}*")) {{
+                            if ($item.FullName -notmatch $exclude) {{
+                                $results += $item
+                                if ($results.Count -ge {max_results}) {{ break }}
+                            }}
+                        }}
+                    }}
+                }}
+            }} catch {{}}
+        }}
     }}
+    if ($results.Count -ge {max_results}) {{ break }}
 }}
-$results | Sort-Object LastWriteTime -Descending | Select-Object -First {max_results} |
-    Select-Object FullName, Name, LastWriteTime, Length |
-    ConvertTo-Json -Compress
+if ($results.Count -eq 0) {{
+    Write-Output '[]'
+}} else {{
+    $results | Sort-Object LastWriteTime -Descending | Select-Object -First {max_results} |
+        Select-Object FullName, Name, LastWriteTime, Length, @{{Name="Type"; Expression={{ if ($_.PSIsContainer) {{'folder'}} else {{'file'}} }}}} |
+        ConvertTo-Json -Compress
+}}
 """
+    logger.info(f"[SEARCH] roots_init={ps_roots_init.strip().replace(chr(10), ' ')}, query='{query_clean}', deep={deep}")
     try:
         result = subprocess.run(
             ["powershell.exe", "-NoProfile", "-Command", ps_script],
-            capture_output=True, text=True, timeout=30
+            capture_output=True, text=True, timeout=15
         )
         raw = result.stdout.strip()
         if not raw or raw == "null":
@@ -4871,10 +5108,15 @@ $results | Sort-Object LastWriteTime -Descending | Select-Object -First {max_res
         files = [{"path": f.get("FullName",""), "name": f.get("Name",""),
                   "modified": str(f.get("LastWriteTime","")),
                   "size_bytes": f.get("Length", 0)} for f in data if f.get("FullName")]
+        logger.info(f"[SEARCH] Completed: found {len(files)} files")
         return {"files": files, "count": len(files), "query": req.query,
                 "success": True,
                 "message": f"Found {len(files)} file(s){' matching ' + repr(query_clean) if query_clean else ''}."}
 
+    except subprocess.TimeoutExpired:
+        logger.warning(f"[SEARCH] Timeout expired after 15 seconds")
+        return {"files": [], "count": 0, "query": req.query, "success": False, "timed_out": True,
+                "message": "Search took too long. Try being more specific, or specify a particular folder to search."}
     except Exception as e:
         logger.error(traceback.format_exc())
         raise HTTPException(500, str(e))
@@ -4904,7 +5146,8 @@ async def clipboard_action(req: ClipboardRequest):
                 return {"success": True, "message": "Content copied to clipboard", "action": "write"}
             else:
                 import subprocess
-                subprocess.run(["powershell.exe", "-Command", f'Set-Clipboard -Value "{req.content.replace(chr(34), chr(39))}"'], check=True)
+                # clip.exe is standard on Windows and accepts input via stdin, making it 100% shell-injection safe
+                subprocess.run(["clip.exe"], input=req.content, text=True, check=True)
                 return {"success": True, "message": "Content copied to clipboard", "action": "write"}
 
         # Read clipboard
@@ -5192,12 +5435,15 @@ async def calendar_operation(req: CalendarRequest):
     try:
         if req.operation == "set_reminder":
             msg = req.message or "Reminder from Pecifics"
+            # Strip dangerous command separator and subexpression characters to prevent shell injection
+            msg_clean = re.sub(r'["\'`$;|&<>]', '', msg)
             remind_time = _parse_reminder_time(req.time or "in 5 minutes", req.date)
-            task_name = f"Pecifics_{msg[:30].replace(' ','_')}_{remind_time.replace(':','')}"
+            # Restrict task name to alphanumeric and underscores
+            task_name = f"Pecifics_{re.sub(r'[^a-zA-Z0-9_]', '_', msg_clean[:20])}_{remind_time.replace(':','')}"
 
             # Toast notification PowerShell script
-            toast_cmd = f'New-BurntToastNotification -Text "Pecifics Reminder", "{msg}" -Snooze -Dismiss'
-            fallback_cmd = f'[System.Reflection.Assembly]::LoadWithPartialName("System.Windows.Forms") | Out-Null; [System.Windows.Forms.MessageBox]::Show("{msg}", "Pecifics Reminder")'
+            toast_cmd = f'New-BurntToastNotification -Text "Pecifics Reminder", "{msg_clean}" -Snooze -Dismiss'
+            fallback_cmd = f'[System.Reflection.Assembly]::LoadWithPartialName("System.Windows.Forms") | Out-Null; [System.Windows.Forms.MessageBox]::Show("{msg_clean}", "Pecifics Reminder")'
 
             ps_create_task = f"""
 $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument '-WindowStyle Hidden -Command "{fallback_cmd}"'
@@ -5211,7 +5457,7 @@ Write-Output "REMINDER_SET:{task_name}"
                 capture_output=True, text=True, timeout=15
             )
             if "REMINDER_SET" in result.stdout or result.returncode == 0:
-                return {"success": True, "message": f"Reminder set for {remind_time}: '{msg}'", "task_name": task_name, "time": remind_time}
+                return {"success": True, "message": f"Reminder set for {remind_time}: '{msg_clean}'", "task_name": task_name, "time": remind_time}
             return {"success": False, "error": result.stderr or "Failed to create scheduled task"}
 
         elif req.operation == "list_reminders":
@@ -5226,9 +5472,11 @@ Write-Output "REMINDER_SET:{task_name}"
 
         elif req.operation == "cancel_reminder":
             name = req.reminder_name or ""
-            ps = f'Unregister-ScheduledTask -TaskName "{name}" -Confirm:$false; Write-Output "CANCELLED"'
+            # Strip dangerous command separator and subexpression characters
+            name_clean = re.sub(r'[^a-zA-Z0-9_]', '_', name)
+            ps = f'Unregister-ScheduledTask -TaskName "{name_clean}" -Confirm:$false; Write-Output "CANCELLED"'
             result = subprocess.run(["powershell.exe", "-NoProfile", "-Command", ps], capture_output=True, text=True, timeout=10)
-            return {"success": "CANCELLED" in result.stdout, "message": f"Reminder '{name}' cancelled"}
+            return {"success": "CANCELLED" in result.stdout, "message": f"Reminder '{name_clean}' cancelled"}
 
         elif req.operation == "get_events":
             # Try Outlook COM

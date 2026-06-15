@@ -26,12 +26,20 @@ class WordCOM {
 
             let outputBuffer = '';
             const readyMarker = '>>WORD_READY<<';
+            const errorMarker = '>>WORD_ERROR:';
 
             this.psProcess.stdout.on('data', (data) => {
                 outputBuffer += data.toString();
                 if (outputBuffer.includes(readyMarker)) {
                     this.isReady = true;
                     resolve();
+                } else if (outputBuffer.includes(errorMarker)) {
+                    const parts = outputBuffer.split(errorMarker);
+                    const errorMsg = parts[1] ? parts[1].split('<<')[0] : 'COM Activation Failed';
+                    this.psProcess.kill();
+                    this.psProcess = null;
+                    this.isReady = false;
+                    reject(new Error(errorMsg.trim()));
                 }
             });
 
@@ -39,11 +47,15 @@ class WordCOM {
                 console.error('Word PS Error:', data.toString());
             });
 
-            // Initialize Word COM object
+            // Initialize Word COM object with error handling
             this.psProcess.stdin.write(`
-                $global:WordApp = New-Object -ComObject Word.Application
-                $global:WordApp.Visible = $true
-                Write-Output '${readyMarker}'
+                try {
+                    $global:WordApp = New-Object -ComObject Word.Application
+                    $global:WordApp.Visible = $true
+                    Write-Output '${readyMarker}'
+                } catch {
+                    Write-Output "${errorMarker} $($_.Exception.Message) <<"
+                }
             \n`);
         });
     }

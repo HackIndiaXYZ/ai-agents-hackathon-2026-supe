@@ -555,18 +555,30 @@ class BrowserAutomation {
         if (!url.startsWith('http')) url = 'https://' + url;
         try {
             await ensureBrowser();
-            // Reuse existing tab for same domain or navigate current tab
             const domain = new URL(url).hostname;
             const p = await getOrNavigateTo(domain, url);
             if (p) {
                 const title = await p.title();
-                return { success: true, message: `Navigated to: ${url}`, title };
+                return { success: true, message: `Navigated to: ${url}`, title, url, automationAvailable: true };
             }
-        } catch (e) {
-            return { success: false, error: e.message };
+            throw new Error("Could not find or create page in Playwright browser");
+        } catch (cdpErr) {
+            console.log(`[Navigate] CDP/Playwright unavailable (${cdpErr.message}) — opening in default browser`);
+            try {
+                const { shell } = require('electron');
+                await shell.openExternal(url);
+            } catch (openErr) {
+                const { exec } = require('child_process');
+                exec(`start "" "${url}"`);
+            }
+            return {
+                success: true,
+                message: `Opened ${url} in your default browser.`,
+                automationAvailable: false,
+                url,
+                note: "I can't automate clicks or typing here since this opened outside the Pecifics Chrome window. Say 'reopen in Pecifics Chrome' if you need me to interact with the page."
+            };
         }
-        // Fallback
-        return this.open(url);
     }
 
     async navigateAndLogin(params = {}) {
@@ -586,7 +598,7 @@ class BrowserAutomation {
             const title = await p.title().catch(() => '');
 
             if (!loginRequested) {
-                return { success: true, message: `Opened: ${finalUrl}`, url: p.url(), title };
+                return { success: true, message: `Opened: ${finalUrl}`, url: p.url(), title, automationAvailable: true };
             }
 
             const current = p.url();
@@ -606,6 +618,7 @@ class BrowserAutomation {
                     url: p.url(),
                     title: await p.title().catch(() => title),
                     login_result: loginResult,
+                    automationAvailable: true
                 };
             }
             return {
@@ -616,9 +629,24 @@ class BrowserAutomation {
                 url: p.url(),
                 title: await p.title().catch(() => title),
                 login_result: loginResult,
+                automationAvailable: true
             };
         } catch (e) {
-            return { success: false, error_class: 'navigate_and_login_failed', error: e.message };
+            console.log(`[navigateAndLogin] CDP/Playwright failed, using shell.openExternal:`, e.message);
+            try {
+                const { shell } = require('electron');
+                await shell.openExternal(finalUrl);
+            } catch (openErr) {
+                const { exec } = require('child_process');
+                exec(`start "" "${finalUrl}"`);
+            }
+            return {
+                success: true,
+                message: `Opened ${finalUrl} in your default browser.`,
+                automationAvailable: false,
+                url: finalUrl,
+                note: "I can't automate clicks or typing here since this opened outside the Pecifics Chrome window. Say 'reopen in Pecifics Chrome' if you need me to interact with the page."
+            };
         }
     }
 

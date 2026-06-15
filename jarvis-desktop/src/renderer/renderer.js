@@ -74,22 +74,35 @@
     function extractTaskResultData(task, actionResults, originalMessage) {
         const searchGroups = [];
         const allItems = [];
+        let browserResult = null;
+
         for (const entry of actionResults || []) {
             const actionName = entry?.action;
             const result = entry?.result || {};
-            if (!['search_files', 'search-files', 'search_files_advanced'].includes(actionName)) continue;
-            if (result.success === false) continue;
-            const files = Array.isArray(result.files) ? result.files : (Array.isArray(result.results) ? result.results : []);
-            const items = files.map(normalizeSearchFileItem).filter(item => item.path);
-            const params = entry?.params || {};
-            const group = {
-                pattern: params.pattern || params.search_term || params.query || params.name || '',
-                location: params.location || params.search_location || params.path || '',
-                items,
-            };
-            searchGroups.push(group);
-            allItems.push(...items);
+
+            if (['search_files', 'search-files', 'search_files_advanced', 'find_files'].includes(actionName) && result.success !== false) {
+                const files = Array.isArray(result.files) ? result.files : (Array.isArray(result.results) ? result.results : []);
+                const items = files.map(normalizeSearchFileItem).filter(item => item.path);
+                const params = entry?.params || {};
+                const group = {
+                    pattern: params.pattern || params.search_term || params.query || params.name || '',
+                    location: params.location || params.search_location || params.path || '',
+                    items,
+                };
+                searchGroups.push(group);
+                allItems.push(...items);
+            }
+
+            if (['browser_navigate', 'navigate_to', 'navigate_and_login', 'browser_navigate_login', 'browser_navigate_and_login', 'browser_open', 'open_browser'].includes(actionName) && result.success !== false) {
+                browserResult = {
+                    type: 'browser_navigation',
+                    url: result.url || entry.params?.url || '',
+                    automationAvailable: result.automationAvailable !== false,
+                    message: result.message || ''
+                };
+            }
         }
+
         if (searchGroups.length) {
             return {
                 type: 'file_search',
@@ -99,6 +112,11 @@
                 items: allItems,
             };
         }
+
+        if (browserResult) {
+            return browserResult;
+        }
+
         return null;
     }
 
@@ -653,6 +671,16 @@
                     if (protocolPlan && protocolPlan.session_id) {
                         sessionId = protocolPlan.session_id;
                         localStorage.setItem('pecificsSessionId', sessionId);
+                    }
+
+                    if (protocolPlan && protocolPlan.strategy === 'chat') {
+                        console.log('[protocol-planner] Chat reply:', protocolPlan);
+                        removeThinking();
+                        const answer = protocolPlan.reply || protocolPlan.message || 'I understand.';
+                        addMessage(answer, 'ai');
+                        conversationHistory.push({ role: 'assistant', content: answer });
+                        finishProcessingUi();
+                        return;
                     }
 
                     const protocolTasks = protocolPlan.tasks || [];

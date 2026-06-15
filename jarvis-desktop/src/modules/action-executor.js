@@ -1755,6 +1755,26 @@ if ($target) {
         return buffer.toString('base64');
     }
 
+    async runLocalOCR(base64Image) {
+        try {
+            console.log('[action-executor] Running local OCR using tesseract.js...');
+            const Tesseract = require('tesseract.js');
+            let imageBuffer;
+            if (base64Image.startsWith('data:image')) {
+                const base64Data = base64Image.replace(/^data:image\/\w+;base64,/, "");
+                imageBuffer = Buffer.from(base64Data, 'base64');
+            } else {
+                imageBuffer = Buffer.from(base64Image, 'base64');
+            }
+            const { data: { text } } = await Tesseract.recognize(imageBuffer, 'eng');
+            console.log('[action-executor] OCR success, extracted text length:', text?.length || 0);
+            return text || '';
+        } catch (e) {
+            console.error('[action-executor] OCR error:', e);
+            return '';
+        }
+    }
+
     async verifyWhatsAppMessageSent(recipient, body) {
         try {
             const screenshotB64 = await this.captureScreenshotBase64();
@@ -2329,7 +2349,47 @@ if ($target) {
             'ppt_update_slide_text': () => powerPointCOM.updateSlideText(params.slide_number, params.old_text, params.new_text),
             
             // Word COM automation - pass all params as options object
-            'word_create_document': () => wordCOM.createDocument(params.title, params.content),
+            'word_create_document': async () => {
+                try {
+                    await wordCOM.initializeSession();
+                    await wordCOM.createDocument(params.title, params.content);
+                    return { success: true, message: 'Word document created via Word COM' };
+                } catch (err) {
+                    console.warn('[action-executor] word_create_document COM failed, falling back to python-docx:', err.message);
+                    const path = require('path');
+                    const os = require('os');
+                    const title = params.title || 'Document';
+                    const safeTitle = title.replace(/[<>:"/\\|?*]/g, '').trim().substring(0, 60) || 'Document';
+                    const filename = path.join(os.homedir(), 'Desktop', `${safeTitle}.docx`);
+                    const structure = {
+                        title: params.title || 'Document',
+                        sections: [{
+                            heading: params.title || 'Document',
+                            content: [{ type: 'paragraph', text: params.content || '' }]
+                        }]
+                    };
+                    const BACKEND = process.env.PECIFICS_BACKEND_URL || 'http://localhost:8000';
+                    const axios = require('axios');
+                    try {
+                        const fbResp = await axios.post(`${BACKEND}/create_docx_file`, {
+                            structure, filename, topic: params.title || 'Document'
+                        }, { timeout: 15000 });
+                        if (fbResp.data && fbResp.data.success) {
+                            const { shell } = require('electron');
+                            shell.openPath(fbResp.data.path || filename);
+                            return { success: true, message: `Word document created via fallback at ${fbResp.data.path || filename}`, filename };
+                        }
+                    } catch (fbErr) {
+                        console.warn('[word-doc] Backend docx fallback also failed:', fbErr.message);
+                    }
+                    const fs = require('fs');
+                    const txtPath = filename.replace(/\.docx$/i, '.txt');
+                    fs.writeFileSync(txtPath, `${title}\n\n${params.content || ''}`, 'utf8');
+                    const { shell } = require('electron');
+                    shell.openPath(txtPath);
+                    return { success: true, message: `Word document saved as text file: ${txtPath}`, filename: txtPath };
+                }
+            },
             'word_open_document': () => wordCOM.openDocument(params.filepath),
             'word_read_content': () => wordCOM.readDocumentContent(),
             'word_find_replace': () => wordCOM.findAndReplace(params.search_text, params.replacement_text, params.replace_all !== false),
@@ -2344,7 +2404,23 @@ if ($target) {
             'word_change_color': () => wordCOM.changeColor(params.color, params.start_paragraph, params.end_paragraph),
             
             // Excel COM automation
-            'excel_create_workbook': () => excelCOM.createWorkbook(),
+            'excel_create_workbook': async () => {
+                try {
+                    await excelCOM.initializeSession();
+                    await excelCOM.createWorkbook();
+                    return { success: true, message: 'Excel workbook created' };
+                } catch (err) {
+                    console.warn('[action-executor] excel_create_workbook failed:', err.message);
+                    const fs = require('fs');
+                    const path = require('path');
+                    const os = require('os');
+                    const filename = path.join(os.homedir(), 'Desktop', `Book1.csv`);
+                    fs.writeFileSync(filename, '', 'utf8');
+                    const { shell } = require('electron');
+                    shell.openPath(filename);
+                    return { success: true, message: `Excel COM failed. Opened blank CSV at: ${filename}`, filename };
+                }
+            },
             'excel_open_workbook': () => excelCOM.openWorkbook(params.filepath),
             'excel_write_cell': () => excelCOM.writeCell(params.row, params.col, params.value),
             'excel_write_data': () => excelCOM.writeData(params.data),
@@ -2374,8 +2450,13 @@ if ($target) {
                         console.warn('[read_screen] Screenshot capture failed:', e.message);
                     }
                 }
+                let ocr_text = null;
+                if (screenshot) {
+                    ocr_text = await this.runLocalOCR(screenshot);
+                }
                 const res = await this._callBackend('/read_screen', {
                     screenshot,
+                    ocr_text,
                     question: params.question || params.query || 'What is on my screen?',
                 });
                 return res;
@@ -3225,6 +3306,7 @@ if ($target) {
         const axios = require('axios');
         const path = require('path');
         const os = require('os');
+        const fs = require('fs');
 
         const topic = params.topic || params.title || 'document';
         const instructions = params.instructions || params.content || '';
@@ -3246,13 +3328,52 @@ if ($target) {
             const safeTitle = title.replace(/[<>:"/\\|?*]/g, '').trim().substring(0, 60) || 'Document';
             const filename = params.filename || path.join(os.homedir(), 'Desktop', `${safeTitle}.docx`);
 
-            // 2. Try Word COM (requires Microsoft Word installed)
+            // 2. Try Word COM via timed child process (requires Microsoft Word installed)
             try {
-                // Add a hard timeout to Word COM init — 15 seconds max
-                const comResult = await Promise.race([
-                    this._createWordViaComInternal(structure, title, filename, wordCOM),
-                    new Promise((_, reject) => setTimeout(() => reject(new Error('Word COM timeout after 15s — Word may not be installed')), 15000))
-                ]);
+                const tempJsonPath = path.join(os.tmpdir(), `word_struct_${Date.now()}.json`);
+                fs.writeFileSync(tempJsonPath, JSON.stringify(structure, null, 2), 'utf8');
+
+                const scriptPath = path.join(__dirname, 'word_create.ps1');
+                const spawn = require('child_process').spawn;
+
+                const comResult = await new Promise((resolve, reject) => {
+                    const child = spawn('powershell.exe', [
+                        '-NoProfile',
+                        '-ExecutionPolicy', 'Bypass',
+                        '-File', scriptPath,
+                        '-JsonPath', tempJsonPath,
+                        '-OutputPath', filename
+                    ]);
+
+                    let stdout = '';
+                    let stderr = '';
+
+                    child.stdout.on('data', data => { stdout += data.toString(); });
+                    child.stderr.on('data', data => { stderr += data.toString(); });
+
+                    const timer = setTimeout(() => {
+                        child.kill('SIGTERM');
+                        try {
+                            const { execSync } = require('child_process');
+                            execSync(`taskkill /F /PID ${child.pid}`, { stdio: 'ignore' });
+                        } catch {}
+                        reject(new Error('Word COM timeout after 15s'));
+                    }, 15000);
+
+                    child.on('close', code => {
+                        clearTimeout(timer);
+                        try { fs.unlinkSync(tempJsonPath); } catch {}
+                        
+                        if (code === 0 && stdout.includes('SUCCESS')) {
+                            const { shell } = require('electron');
+                            shell.openPath(filename);
+                            resolve({ success: true, message: `Word document "${title}" created at ${filename}`, filename });
+                        } else {
+                            reject(new Error(stderr || stdout || `Process exited with code ${code}`));
+                        }
+                    });
+                });
+
                 return comResult;
             } catch (comErr) {
                 console.warn('[word-doc] COM failed, trying backend fallback:', comErr.message);
@@ -3270,7 +3391,6 @@ if ($target) {
                     console.warn('[word-doc] Backend docx fallback also failed:', fbErr.message);
                 }
                 // Last resort: save as plain text
-                const fs = require('fs');
                 let textContent = `${title}\n${'='.repeat(title.length)}\n\n`;
                 for (const section of structure.sections || []) {
                     textContent += `\n${section.heading}\n${'-'.repeat(section.heading.length)}\n`;
@@ -3291,72 +3411,7 @@ if ($target) {
         }
     }
 
-    async _createWordViaComInternal(structure, title, filename, wordCOM) {
-        // 2. Create the Word document
-        await wordCOM.initializeSession();
-        await wordCOM.createDocument('', ''); // blank doc
 
-        const subtitle = structure.subtitle || '';
-
-        // Write title as Heading 1 style
-        await wordCOM.addHeading(title, 1, { font_size: 24 });
-        if (subtitle) {
-            await wordCOM.addParagraph(subtitle, { font_size: 13, italic: true, alignment: 'center' });
-        }
-
-        // 3. Render each section
-        for (const section of structure.sections || []) {
-            const headingLevel = section.level || 2;
-            await wordCOM.addHeading(section.heading, headingLevel);
-
-            for (const block of section.content || []) {
-                switch (block.type) {
-                    case 'paragraph': {
-                        const cleanText = (block.text || '').replace(/\*\*(.+?)\*\*/g, '$1');
-                        await wordCOM.addParagraph(cleanText, { font_size: 12 });
-                        break;
-                    }
-                    case 'bullet':
-                    case 'numbered': {
-                        for (const item of block.items || []) {
-                            const prefix = block.type === 'bullet' ? '•  ' : '';
-                            await wordCOM.addParagraph(`${prefix}${item}`, { font_size: 12 });
-                        }
-                        break;
-                    }
-                    case 'table': {
-                        const headers = block.headers || [];
-                        const rows = block.rows || [];
-                        const totalRows = 1 + rows.length;
-                        const totalCols = headers.length;
-                        if (totalRows > 1 && totalCols > 0) {
-                            await wordCOM.insertTable(totalRows, totalCols);
-                            const fillCmd = `
-                                $tbl = $global:WordDoc.Tables.Item($global:WordDoc.Tables.Count)
-                                ${headers.map((h, i) => `$tbl.Cell(1,${i+1}).Range.Text = "${h.replace(/"/g, '`"')}"`).join('\n                                    ')}
-                                ${rows.map((row, ri) => row.map((cell, ci) => `$tbl.Cell(${ri+2},${ci+1}).Range.Text = "${String(cell).replace(/"/g, '`"')}"`).join('\n                                    ')).join('\n                                    ')}
-                                $tbl.Rows.Item(1).Range.Font.Bold = $true
-                                Write-Output "Table filled"
-                            `;
-                            await wordCOM.executeInSession(fillCmd);
-                        }
-                        break;
-                    }
-                }
-                await new Promise(r => setTimeout(r, 50));
-            }
-        }
-
-        // 4. Save document
-        await wordCOM.saveDocument(filename);
-
-        return {
-            success: true,
-            message: `Word document "${title}" created and saved to ${filename}`,
-            filename,
-            sections: structure.sections.length,
-        };
-    }
 
     // ── AI-powered Excel spreadsheet creation ────────────────────────────────
     async _createExcelSpreadsheetAI(params) {
@@ -3452,9 +3507,43 @@ if ($target) {
                 sheets: structure.sheets.length,
             };
         } catch (e) {
-            return { success: false, error: e.message };
+            console.warn('[excel-doc] Excel COM failed, creating CSV fallback:', e.message);
+            try {
+                const fs = require('fs');
+                const title = structure.title || topic;
+                const safeTitle = title.replace(/[<>:"/\\|?*]/g, '').trim().substring(0, 60) || 'Spreadsheet';
+                const filename = params.filename 
+                    ? params.filename.replace(/\.xlsx$/i, '.csv')
+                    : path.join(os.homedir(), 'Desktop', `${safeTitle}.csv`);
+                
+                const firstSheet = (structure.sheets && structure.sheets[0]) ? structure.sheets[0] : {};
+                const headers = firstSheet.headers || [];
+                const rows = firstSheet.rows || [];
+                
+                let csvContent = '';
+                if (headers.length > 0) {
+                    csvContent += headers.map(h => `"${String(h).replace(/"/g, '""')}"`).join(',') + '\n';
+                }
+                for (const row of rows) {
+                    csvContent += row.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(',') + '\n';
+                }
+                
+                fs.writeFileSync(filename, csvContent, 'utf8');
+                const { shell } = require('electron');
+                shell.openPath(filename);
+                return {
+                    success: true,
+                    message: `Excel COM failed. Saved data as CSV at ${filename}`,
+                    filename,
+                    fallback: 'csv'
+                };
+            } catch (fallbackErr) {
+                return { success: false, error: `Excel COM failed (${e.message}) and CSV fallback failed (${fallbackErr.message})` };
+            }
         }
     }
+
+
 
     // ── Generic backend caller ────────────────────────────────────────────────
     async _callBackend(path, body = {}) {
