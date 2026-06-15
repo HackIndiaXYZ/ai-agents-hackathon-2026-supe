@@ -23,6 +23,9 @@ Pecifics LAM lets you control your entire computer by just typing or speaking wh
 | *"Send a WhatsApp to John"*             | Automates WhatsApp Web via browser CDP                             |
 
 ---
+## Demo Video
+
+[Watch the demo video](https://drive.google.com/file/d/1VjX6w8IFZ2H0dqEITYO9qqP08eeOivFV/view?usp=sharing)
 
 ## Key Features Added (This Session)
 
