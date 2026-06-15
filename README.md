@@ -51,66 +51,136 @@ Queries like *"how much RAM do I have?"* / *"how much storage is left?"* are map
 
 ---
 
-## Architecture
+## System Architecture
+
+```mermaid
+flowchart TD
+    User(["👤 User\nKeyboard / Voice"])
+
+    subgraph Electron["🖥️ Electron Desktop App  jarvis-desktop/"]
+        direction TB
+        UI["Command Bar UI\nindex.html + styles.css"]
+        Renderer["renderer.js\nConversational fast-path\nTask result display"]
+        Router["intent-router.js\nFast-path pattern matching\nisConversationalQuery()"]
+        Executor["action-executor.js\nStep-by-step task runner"]
+
+        subgraph Modules["Automation Modules"]
+            BA["browser-automation.js\nPlaywright + CDP"]
+            WC["word-com.js\nMS Word COM via PowerShell"]
+            EC["excel-com.js\nMS Excel COM via PowerShell"]
+            SA["screen-agent.js\nScreenshot + OCR"]
+            SM["system-manager.js\nRAM / CPU / Storage"]
+            FM["file-manager.js\nFile system ops"]
+            AH["app-handlers/\nSpotify · WhatsApp\nTelegram · VSCode"]
+        end
+    end
+
+    subgraph Backend["⚙️ FastAPI Backend  colab-backend/"]
+        direction TB
+        API["langchain_backend.py\nHTTP API Server :8000"]
+        Planner["/plan  LLM Task Graph Builder"]
+        Converse["/converse  Chat endpoint"]
+        WordGen["/generate_word_document\nLLM → JSON doc structure"]
+        DocxFB["/create_docx_file\npython-docx fallback"]
+        PPTGen["ppt_generator_pro.py\npython-pptx layout engine"]
+        FileSearch["/search_files\nPowerShell recursive scan"]
+        ProtoLearn["protocol_learner.py\nAdaptive protocol memory"]
+    end
+
+    subgraph ExternalAI["🤖 AI APIs"]
+        Groq["Groq  Llama 3.3 70B\nPlanning + Content"]
+        Gemini["Gemini Vision\nScreen reading / OCR"]
+        Ollama["Ollama  optional\nLocal LLM"]
+    end
+
+    subgraph SystemLayer["💻 OS / Apps"]
+        Chrome["Google Chrome\nCDP port 9222"]
+        Word["Microsoft Word\nCOM Object"]
+        Excel["Microsoft Excel\nCOM Object"]
+        PS["PowerShell\nFile search / System info"]
+        DefaultBrowser["Default Browser\nshell.openExternal fallback"]
+    end
+
+    subgraph Protocols["📋 Protocol Schemas  protocols/"]
+        JSON["protocols/*.json\nbrowser.navigate\nmsword.create_document\nfilesystem.search_and_open\nscreen.read_content  +20 more"]
+    end
+
+    User --> UI
+    UI --> Renderer
+    Renderer -->|conversational query| Converse
+    Renderer -->|task command| Router
+    Router -->|fast-path matched| Executor
+    Router -->|unknown intent| Planner
+    Planner -->|task graph| Executor
+    Converse --> Groq
+    Planner --> Groq
+    WordGen --> Groq
+    PPTGen --> Groq
+    SA -->|vision analysis| Gemini
+    API --> Ollama
+    Executor --> BA
+    Executor --> WC
+    Executor --> EC
+    Executor --> SA
+    Executor --> SM
+    Executor --> FM
+    Executor --> AH
+    BA -->|CDP session| Chrome
+    BA -->|fallback| DefaultBrowser
+    WC --> Word
+    EC --> Excel
+    SM --> PS
+    FM --> PS
+    FileSearch --> PS
+    Executor -->|HTTP| API
+    Router -.->|loads| JSON
+    Planner -.->|learns| ProtoLearn
+```
+
+### Repository Structure
 
 ```
 pecifics-lam/
-├── blue-amoeba/                  # Landing page (React + Vite + TailwindCSS)
-│
-├── colab-backend/                # Python FastAPI backend + LLM planner
-│   ├── langchain_backend.py      # Main API server (Groq, Gemini, Ollama)
-│   ├── ppt_generator_pro.py      # AI Presentation generation engine
-│   ├── voice_engine.py           # Clap detection + voice state machine
-│   └── protocol_learner.py       # Adaptive protocol learning
-│
-├── jarvis-desktop/               # Electron desktop app
-│   ├── src/main.js               # Electron main process
-│   ├── src/preload.js            # IPC bridge (contextBridge)
+├── blue-amoeba/              # Landing page (React + Vite + TailwindCSS)
+├── colab-backend/            # FastAPI backend + LLM planner
+│   ├── langchain_backend.py  # Main API server
+│   ├── ppt_generator_pro.py  # Presentation AI engine
+│   ├── voice_engine.py       # Clap detection + voice state
+│   └── protocol_learner.py   # Adaptive protocol learning
+├── jarvis-desktop/           # Electron desktop app
 │   └── src/
-│       ├── renderer/
-│       │   ├── renderer.js       # UI logic + conversational fast-path
-│       │   └── intent-router.js  # Local command → action plan mapper
-│       └── modules/
-│           ├── action-executor.js     # Runs action plans step-by-step
-│           ├── browser-automation.js  # Playwright + CDP browser control
-│           ├── word-com.js            # MS Word COM automation (PowerShell)
-│           ├── excel-com.js           # MS Excel COM automation
-│           ├── screen-agent.js        # Screenshot + OCR + Vision API
-│           └── system-manager.js     # RAM, CPU, storage queries
-│
-└── protocols/                    # JSON action protocol schemas
-    ├── browser.navigate.json
-    ├── filesystem.search_and_open.json
-    ├── msword.create_document.json
-    ├── msexcel.create_spreadsheet.json
-    ├── screen.read_content.json
-    └── ...
+│       ├── renderer/         # UI + intent router + renderer
+│       └── modules/          # All automation modules
+├── protocols/                # JSON action protocol schemas (25 protocols)
+├── docs/                     # Architecture & developer docs
+└── start_all.bat             # One-click launcher
 ```
 
-### How a Command Flows
+### Command Flow
 
 ```
-User types command
-       │
-       ▼
- isConversationalQuery()?
-   YES → /converse (Groq LLM chat response)
-   NO  ↓
-       │
- intent-router.js fast-paths:
-   ├── File search → /search_files (PowerShell recursive)
-   ├── Screen / clipboard / RAM → system action executor
-   ├── Word / Excel / PPT → LLM content plan → COM/python-docx
-   ├── Open Figma/Notion/... → shell.openExternal or Playwright CDP
-   ├── WhatsApp / Spotify / YouTube → app-specific modules
-   └── Unknown → FastAPI /plan → LLM task graph → executor
-                      │
-                      ▼
-            action-executor.js
-            executes each step
-                      │
-                      ▼
-            Result shown in UI
+User Input
+    │
+    ├─ isConversationalQuery? ──YES──▶ /converse → Groq → reply shown in UI
+    │
+    └─ NO ──▶ intent-router.js fast-path match
+                    │
+           ┌────────┴──────────────────────┐
+           │                               │
+     Fast-path hit                 No match found
+     file / screen / word /      → /plan → Groq LLM
+     app / clipboard / RAM        → task graph JSON
+           │                               │
+           └────────────┬──────────────────┘
+                        │
+               action-executor.js
+               (runs each action step)
+                        │
+            ┌───────────┴──────────────────┐
+     Browser CDP / Word COM /       PowerShell /
+     App Handlers / Screen AI       system-manager
+                        │
+                  Result → UI
 ```
 
 ---
