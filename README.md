@@ -27,6 +27,8 @@ Pecifics LAM lets you control your entire computer by just typing or speaking wh
 
 [Watch the demo video](https://drive.google.com/file/d/1VjX6w8IFZ2H0dqEITYO9qqP08eeOivFV/view?usp=sharing)
 
+---
+
 ## Key Features Added (This Session)
 
 ### 1. Conversational Query Routing
